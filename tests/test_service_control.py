@@ -157,7 +157,9 @@ class TestUsageReporter:
         with patch.object(
             reporter, "get_consumer_id", return_value="project:test-project"
         ), patch.object(
-            reporter, "_get_usage_delta", return_value={"send_message_requests": 10}
+            reporter,
+            "_get_usage_delta",
+            new=AsyncMock(return_value={"send_message_requests": 10}),
         ):
             now = datetime.utcnow()
             result = await reporter.report_usage(
@@ -194,7 +196,9 @@ class TestUsageReporter:
         with patch.object(
             reporter, "get_consumer_id", return_value="project:test-project"
         ), patch.object(
-            reporter, "_get_usage_delta", return_value={"send_message_requests": 10}
+            reporter,
+            "_get_usage_delta",
+            new=AsyncMock(return_value={"send_message_requests": 10}),
         ):
             now = datetime.utcnow()
             result = await reporter.report_usage(
@@ -214,7 +218,9 @@ class TestUsageReporter:
         ), patch.object(
             reporter, "_get_active_order_ids", return_value=["order-123", "order-456"]
         ), patch.object(
-            reporter, "_get_usage_delta", return_value={"send_message_requests": 10}
+            reporter,
+            "_get_usage_delta",
+            new=AsyncMock(return_value={"send_message_requests": 10}),
         ):
             now = datetime.utcnow()
             results = await reporter.report_all_usage(

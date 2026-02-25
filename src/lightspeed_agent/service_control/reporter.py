@@ -6,8 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from lightspeed_agent.api.a2a.usage_plugin import get_order_usage
 from lightspeed_agent.config import get_settings
+from lightspeed_agent.metering import get_usage_repository
 from lightspeed_agent.service_control.client import (
     ServiceControlClient,
     get_service_control_client,
@@ -71,13 +71,12 @@ class UsageReporter:
         self._max_retries = max_retries
         self._retry_delay = retry_delay_seconds
         self._settings = get_settings()
+        self._usage_repo = get_usage_repository()
 
         # Store for failed reports (for retry)
         self._failed_reports: list[UsageReport] = []
         # Track last report time per order
         self._last_report_time: dict[str, datetime] = {}
-        # Track last reported usage values per order to compute deltas
-        self._last_reported_by_order: dict[str, dict[str, int]] = {}
 
     async def get_consumer_id(self, order_id: str) -> str | None:
         """Get the consumer ID (usageReportingId) for an order.
@@ -125,39 +124,18 @@ class UsageReporter:
                 mapped[google_name] = value
         return mapped
 
-    def _get_usage_delta(self, order_id: str) -> dict[str, int]:
-        """Get usage delta for a single order since its last report."""
-        current = get_order_usage(order_id)
-        current_values = {
-            "total_requests": current.total_requests,
-            "total_input_tokens": current.total_input_tokens,
-            "total_output_tokens": current.total_output_tokens,
-            "total_tool_calls": current.total_tool_calls,
-        }
-
-        # Compute deltas
-        deltas = {}
-        for key, current_val in current_values.items():
-            last_val = self._last_reported_by_order.get(order_id, {}).get(key, 0)
-            delta = current_val - last_val
-            if delta > 0:
-                deltas[key] = delta
-
-        # Map to billable metric names
-        billable = {}
-        if deltas.get("total_requests", 0) > 0:
-            billable["send_message_requests"] = deltas["total_requests"]
-        if deltas.get("total_input_tokens", 0) > 0:
-            billable["input_tokens"] = deltas["total_input_tokens"]
-        if deltas.get("total_output_tokens", 0) > 0:
-            billable["output_tokens"] = deltas["total_output_tokens"]
-        if deltas.get("total_tool_calls", 0) > 0:
-            billable["mcp_tool_calls"] = deltas["total_tool_calls"]
-
-        # Update last reported values for this order
-        self._last_reported_by_order[order_id] = current_values
-
-        return billable
+    async def _get_usage_delta(
+        self,
+        order_id: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> dict[str, int]:
+        """Get unreported usage for a single order and period from DB."""
+        return await self._usage_repo.get_unreported_usage(
+            order_id=order_id,
+            start_time=start_time,
+            end_time=end_time,
+        )
 
     async def report_usage(
         self,
@@ -188,7 +166,7 @@ class UsageReporter:
             )
 
         # Get billable usage delta since last report for this order only.
-        metrics = self._get_usage_delta(order_id)
+        metrics = await self._get_usage_delta(order_id, start_time, end_time)
 
         # Map to Google metric names
         mapped_metrics = self.map_metrics(metrics)
@@ -236,6 +214,12 @@ class UsageReporter:
 
         # Update last report time on success
         if success:
+            await self._usage_repo.mark_reported_for_period(
+                order_id=order_id,
+                start_time=start_time,
+                end_time=end_time,
+                reported_at=end_time,
+            )
             self._last_report_time[order_id] = end_time
 
         return result
@@ -379,6 +363,12 @@ class UsageReporter:
                 report.error_message = error_msg
                 still_failed.append(report)
             else:
+                await self._usage_repo.mark_reported_for_period(
+                    order_id=report.order_id,
+                    start_time=report.start_time,
+                    end_time=report.end_time,
+                    reported_at=datetime.utcnow(),
+                )
                 logger.info(
                     "Successfully retried report for order %s on attempt %d",
                     report.order_id,

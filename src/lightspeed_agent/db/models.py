@@ -126,6 +126,7 @@ class UsageRecordModel(Base):
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     request_count: Mapped[int] = mapped_column(Integer, default=0)
+    tool_calls: Mapped[int] = mapped_column(Integer, default=0)
     period_start: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
