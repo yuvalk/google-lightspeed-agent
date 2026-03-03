@@ -112,6 +112,19 @@ class Settings(BaseSettings):
         default=True,
         description="Enable usage reporting to Google Cloud Service Control",
     )
+    # Metering recovery: stale claim release and backfill
+    metering_stale_claim_minutes: int = Field(
+        default=15,
+        description="Release rows claimed longer than this (worker crash recovery)",
+    )
+    metering_backfill_max_age_hours: int = Field(
+        default=168,
+        description="Backfill only periods within this many hours (default 7 days)",
+    )
+    metering_backfill_limit_per_run: int = Field(
+        default=20,
+        description="Max unreported periods to process per backfill run",
+    )
 
     # Rate Limiting (Redis-backed)
     rate_limit_requests_per_minute: int = Field(

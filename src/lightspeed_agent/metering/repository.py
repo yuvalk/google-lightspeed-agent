@@ -242,6 +242,77 @@ class UsageRepository:
             result = await session.execute(stmt)
             return int(result.rowcount or 0)
 
+    async def release_stale_claimed_rows(
+        self,
+        *,
+        older_than_minutes: int = 15,
+    ) -> int:
+        """Release rows claimed longer than threshold (e.g. worker crash).
+
+        Returns:
+            Number of rows released.
+        """
+        threshold = datetime.now(UTC) - timedelta(minutes=older_than_minutes)
+        async with get_session() as session:
+            stmt = (
+                update(UsageRecordModel)
+                .where(
+                    UsageRecordModel.reported.is_(False),
+                    UsageRecordModel.reporting_started_at.isnot(None),
+                    UsageRecordModel.reporting_started_at < threshold,
+                )
+                .values(reporting_started_at=None, report_error=None)
+            )
+            result = await session.execute(stmt)
+            return int(result.rowcount or 0)
+
+    async def get_unreported_periods(
+        self,
+        *,
+        older_than: datetime,
+        max_age_hours: int = 168,
+        limit: int = 20,
+    ) -> list[tuple[str, datetime, datetime]]:
+        """Return distinct (order_id, period_start, period_end) for unreported rows.
+
+        Only returns periods with period_end <= older_than (includes every hour
+        before the current hour). Excludes claimed rows and reported rows (avoids
+        overlap with report_hourly, which runs first and marks rows reported).
+        Ordered by period_end ASC for chronological catch-up.
+
+        Args:
+            older_than: Only periods with period_end <= this (e.g. start of current hour).
+            max_age_hours: Ignore periods older than this (default 7 days).
+            limit: Max periods to return.
+
+        Returns:
+            List of (order_id, period_start, period_end).
+        """
+        cutoff = datetime.now(UTC) - timedelta(hours=max_age_hours)
+        older_than_norm = _normalize_utc(older_than)
+        async with get_session() as session:
+            stmt = (
+                select(
+                    UsageRecordModel.order_id,
+                    UsageRecordModel.period_start,
+                    UsageRecordModel.period_end,
+                )
+                .where(
+                    UsageRecordModel.reported.is_(False),
+                    UsageRecordModel.reporting_started_at.is_(None),
+                    UsageRecordModel.period_end <= older_than_norm,
+                    UsageRecordModel.period_end >= cutoff,
+                )
+                .distinct()
+                .order_by(UsageRecordModel.period_end.asc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            return [
+                (r.order_id, _normalize_utc(r.period_start), _normalize_utc(r.period_end))
+                for r in result.all()
+            ]
+
     async def get_usage_by_order(self) -> dict[str, dict[str, int]]:
         """Return cumulative usage totals grouped by order_id."""
         async with get_session() as session:

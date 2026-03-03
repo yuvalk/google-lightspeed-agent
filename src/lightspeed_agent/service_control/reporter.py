@@ -318,6 +318,77 @@ class UsageReporter:
 
         return results
 
+    async def release_stale_claimed_rows(self) -> int:
+        """Release rows claimed longer than threshold (worker crash recovery).
+
+        Returns:
+            Number of rows released.
+        """
+        return await self._usage_repo.release_stale_claimed_rows(
+            older_than_minutes=self._settings.metering_stale_claim_minutes,
+        )
+
+    async def run_hourly_cycle(self) -> list[ReportResult]:
+        """Run full hourly reporting cycle: release stale, report hour, backfill.
+
+        Call this from the scheduler for each hourly run.
+        """
+        released = await self.release_stale_claimed_rows()
+        if released > 0:
+            logger.warning(
+                "Released %d stale claimed rows (orphaned by crash)",
+                released,
+            )
+
+        results = await self.report_hourly()
+        
+        backfill_results = await self.report_backfill()
+        if backfill_results:
+            logger.info(
+                "Backfill complete: %d successful, %d failed",
+                sum(1 for r in backfill_results if r.success),
+                sum(1 for r in backfill_results if not r.success),
+            )
+            results = results + backfill_results
+
+        return results
+
+    async def report_backfill(self) -> list[ReportResult]:
+        """Report unreported periods (catches stale-release orphans and scheduler downtime).
+
+        Processes periods older than the previous hour, up to max_age_hours.
+        Run after report_hourly. Uses config: metering_backfill_max_age_hours,
+        metering_backfill_limit_per_run.
+        """
+        now = datetime.utcnow()
+        current_hour_start = now.replace(minute=0, second=0, microsecond=0)
+        max_age = self._settings.metering_backfill_max_age_hours
+        limit = self._settings.metering_backfill_limit_per_run
+
+        periods = await self._usage_repo.get_unreported_periods(
+            older_than=current_hour_start,
+            max_age_hours=max_age,
+            limit=limit,
+        )
+        if not periods:
+            return []
+
+        logger.info(
+            "Backfill: reporting %d unreported period(s) (max_age=%dh, limit=%d)",
+            len(periods),
+            max_age,
+            limit,
+        )
+        results = []
+        for order_id, start_time, end_time in periods:
+            result = await self.report_usage(
+                order_id=order_id,
+                start_time=start_time,
+                end_time=end_time,
+            )
+            results.append(result)
+        return results
+
     async def retry_failed_reports(self) -> list[ReportResult]:
         """Retry previously failed reports.
 

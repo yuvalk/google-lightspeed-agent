@@ -386,6 +386,47 @@ class TestUsageReporter:
             mock_usage_repo.mark_reported_by_ids.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_report_backfill(self, reporter, mock_client, mock_usage_repo):
+        """Test backfill reports unreported periods."""
+        start = datetime.utcnow() - timedelta(hours=3)
+        end = start + timedelta(hours=1)
+        mock_usage_repo.get_unreported_periods = AsyncMock(
+            return_value=[("order-backfill", start, end)]
+        )
+        mock_row = self._make_mock_row(row_id=501, request_count=5)
+        mock_usage_repo.claim_unreported_rows_for_reporting = AsyncMock(
+            return_value=[mock_row]
+        )
+
+        with patch.object(
+            reporter, "get_consumer_id", new_callable=AsyncMock, return_value="project:test-project"
+        ):
+            results = await reporter.report_backfill()
+
+            assert len(results) == 1
+            assert results[0].success is True
+            assert results[0].order_id == "order-backfill"
+            mock_usage_repo.get_unreported_periods.assert_awaited_once()
+            mock_usage_repo.claim_unreported_rows_for_reporting.assert_awaited_once()
+            mock_usage_repo.mark_reported_by_ids.assert_awaited_once_with(
+                ids=[501],
+                reported_at=ANY,
+            )
+
+    @pytest.mark.asyncio
+    async def test_report_backfill_empty_when_no_periods(
+        self, reporter, mock_client, mock_usage_repo
+    ):
+        """Test backfill returns empty when no unreported periods."""
+        mock_usage_repo.get_unreported_periods = AsyncMock(return_value=[])
+
+        results = await reporter.report_backfill()
+
+        assert results == []
+        mock_usage_repo.get_unreported_periods.assert_awaited_once()
+        mock_usage_repo.claim_unreported_rows_for_reporting.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_retry_releases_on_failure(
         self, reporter, mock_client, mock_usage_repo
     ):
@@ -429,7 +470,7 @@ class TestReportingScheduler:
     def mock_reporter(self):
         """Create mock reporter."""
         reporter = MagicMock()
-        reporter.report_hourly = AsyncMock(return_value=[])
+        reporter.run_hourly_cycle = AsyncMock(return_value=[])
         reporter.retry_failed_reports = AsyncMock(return_value=[])
         reporter.get_failed_reports_count = MagicMock(return_value=0)
         reporter.get_reporting_stats = MagicMock(
@@ -477,7 +518,7 @@ class TestReportingScheduler:
         """Test running immediate report."""
         await scheduler.run_immediate_report()
 
-        mock_reporter.report_hourly.assert_called_once()
+        mock_reporter.run_hourly_cycle.assert_called_once()
 
     def test_set_failure_callback(self, scheduler):
         """Test setting failure callback."""

@@ -329,8 +329,23 @@ app = App(
 
 ## Capabilities
 
-- Usage is per-order and persisted in the database; multiple replicas share the same data
-- Historical data is retained; reported rows remain in the database for audit
+- **Per-order, DB persistence**: Usage is stored per order and hourly period in the database; multiple replicas share the same data
+- **Atomic increments**: PostgreSQL uses `INSERT ... ON CONFLICT DO UPDATE` for concurrent-safe writes; safe for multi-worker deployments
+- **Claim-then-report**: Rows are atomically claimed for reporting, then marked reported or released on failure; prevents double reporting
+- **Historical data retained**: Reported rows remain in the database for audit
+- **Service Control integration**: Hourly reporting to Google Cloud Service Control for marketplace billing (requests, tokens, tool calls)
+- **Retry on failure**: Failed reports are queued and retried with configurable max attempts; rows are released on failure for re-claim on retry
+- **Stale claim recovery**: Rows claimed by a crashed worker (never marked or released) are released at the start of each hourly run; threshold configurable via `METERING_STALE_CLAIM_MINUTES`
+- **Automatic backfill**: Unreported periods (from scheduler downtime or stale releases) are reported on each hourly run; configurable via `METERING_BACKFILL_MAX_AGE_HOURS` (default 7 days) and `METERING_BACKFILL_LIMIT_PER_RUN` (default 20)
+- **GET /usage endpoint**: Returns per-order aggregate totals (requests, tokens, tool calls)
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `METERING_STALE_CLAIM_MINUTES` | 15 | Release rows claimed longer than this (worker crash recovery) |
+| `METERING_BACKFILL_MAX_AGE_HOURS` | 168 | Backfill only periods within this many hours (7 days) |
+| `METERING_BACKFILL_LIMIT_PER_RUN` | 20 | Max unreported periods to process per backfill run |
 
 ## Testing
 

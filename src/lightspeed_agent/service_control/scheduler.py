@@ -82,7 +82,7 @@ class ReportingScheduler:
                 self._last_hourly_run = datetime.utcnow()
                 self._hourly_run_count += 1
 
-                results = await self._reporter.report_hourly()
+                results = await self._reporter.run_hourly_cycle()
 
                 # Check for failures and alert
                 for result in results:
@@ -191,7 +191,7 @@ class ReportingScheduler:
     async def run_immediate_report(self) -> None:
         """Run an immediate hourly report (for testing/debugging)."""
         logger.info("Running immediate usage report")
-        await self._reporter.report_hourly()
+        await self._reporter.run_hourly_cycle()
 
     def get_status(self) -> dict:
         """Get scheduler status.
