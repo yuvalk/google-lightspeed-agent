@@ -860,6 +860,8 @@ The [A2A Inspector](https://github.com/a2aproject/a2a-inspector) provides a web-
 # Clone and run A2A Inspector (if not already installed)
 git clone https://github.com/a2aproject/a2a-inspector.git /tmp/a2a-inspector
 cd /tmp/a2a-inspector
+uv sync
+npm install -C frontend
 ./scripts/run.sh  # Usually runs on port 5001
 ```
 
