@@ -21,7 +21,7 @@
 #   --handler-image <image>   Container image for the marketplace handler
 #                             (default: gcr.io/$PROJECT_ID/marketplace-handler:latest)
 #   --mcp-image <image>       Container image for the MCP server
-#                             (default: gcr.io/$PROJECT_ID/insights-mcp:latest)
+#                             (default: gcr.io/$PROJECT_ID/red-hat-lightspeed-mcp:latest)
 #   --allow-unauthenticated   Allow public access
 #   --build                   Build images before deploying
 #
@@ -80,7 +80,7 @@ AGENT_IMAGE="${AGENT_IMAGE:-}"
 HANDLER_IMAGE="${HANDLER_IMAGE:-}"
 # MCP image must be in GCR since Cloud Run doesn't support Quay.io directly
 # See README.md for instructions to copy the image from Quay.io to GCR
-MCP_IMAGE="${MCP_IMAGE:-gcr.io/${PROJECT_ID}/insights-mcp:latest}"
+MCP_IMAGE="${MCP_IMAGE:-gcr.io/${PROJECT_ID}/red-hat-lightspeed-mcp:latest}"
 
 # Parse arguments
 DEPLOY_SERVICE="all"  # all, handler, agent

@@ -182,8 +182,8 @@ spec:
         #
         # Note: Cloud Run doesn't support Quay.io directly. Copy the image to GCR:
         #   docker pull quay.io/redhat-services-prod/insights-management-tenant/insights-mcp/red-hat-lightspeed-mcp:latest
-        #   docker tag quay.io/.../red-hat-lightspeed-mcp:latest gcr.io/${PROJECT_ID}/insights-mcp:latest
-        #   docker push gcr.io/${PROJECT_ID}/insights-mcp:latest
+        #   docker tag quay.io/.../red-hat-lightspeed-mcp:latest gcr.io/${PROJECT_ID}/red-hat-lightspeed-mcp:latest
+        #   docker push gcr.io/${PROJECT_ID}/red-hat-lightspeed-mcp:latest
         - name: insights-mcp
           image: ${MCP_IMAGE}
           args:

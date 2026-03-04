@@ -240,8 +240,8 @@ docker pull quay.io/redhat-services-prod/insights-management-tenant/insights-mcp
 
 # Tag and push to GCR
 docker tag quay.io/redhat-services-prod/insights-management-tenant/insights-mcp/red-hat-lightspeed-mcp:latest \
-  gcr.io/$GOOGLE_CLOUD_PROJECT/insights-mcp:latest
-docker push gcr.io/$GOOGLE_CLOUD_PROJECT/insights-mcp:latest
+  gcr.io/$GOOGLE_CLOUD_PROJECT/red-hat-lightspeed-mcp:latest
+docker push gcr.io/$GOOGLE_CLOUD_PROJECT/red-hat-lightspeed-mcp:latest
 ```
 
 ### 6. Deploy
@@ -307,7 +307,7 @@ curl -s $AGENT_URL/.well-known/agent.json | jq '.capabilities.extensions'
 | `--service <service>` | Which service to deploy: `all` (default), `handler`, `agent` |
 | `--image <image>` | Container image for the agent (default: `gcr.io/$PROJECT_ID/lightspeed-agent:latest`) |
 | `--handler-image <image>` | Container image for the marketplace handler (default: `gcr.io/$PROJECT_ID/marketplace-handler:latest`) |
-| `--mcp-image <image>` | Container image for the MCP server (default: `gcr.io/$PROJECT_ID/insights-mcp:latest`) |
+| `--mcp-image <image>` | Container image for the MCP server (default: `gcr.io/$PROJECT_ID/red-hat-lightspeed-mcp:latest`) |
 | `--build` | Build the image(s) before deploying |
 | `--allow-unauthenticated` | Allow public access (required for A2A and Pub/Sub) |
 
@@ -348,7 +348,7 @@ sed -e "s|\${PROJECT_ID}|$GOOGLE_CLOUD_PROJECT|g" \
 | CPU | 1 | vCPUs allocated |
 | Memory | 512Mi | Memory limit |
 | Port | 8080 | Internal MCP port |
-| Image | `gcr.io/$PROJECT_ID/insights-mcp:latest` | MCP server image (copied from Quay.io) |
+| Image | `gcr.io/$PROJECT_ID/red-hat-lightspeed-mcp:latest` | MCP server image (copied from Quay.io) |
 
 ### Copying the MCP Image to GCR
 
@@ -360,13 +360,13 @@ docker pull quay.io/redhat-services-prod/insights-management-tenant/insights-mcp
 
 # Tag for GCR
 docker tag quay.io/redhat-services-prod/insights-management-tenant/insights-mcp/red-hat-lightspeed-mcp:latest \
-  gcr.io/$GOOGLE_CLOUD_PROJECT/insights-mcp:latest
+  gcr.io/$GOOGLE_CLOUD_PROJECT/red-hat-lightspeed-mcp:latest
 
 # Push to GCR
-docker push gcr.io/$GOOGLE_CLOUD_PROJECT/insights-mcp:latest
+docker push gcr.io/$GOOGLE_CLOUD_PROJECT/red-hat-lightspeed-mcp:latest
 ```
 
-This step is required before running `deploy.sh`. The deploy script defaults to `gcr.io/$PROJECT_ID/insights-mcp:latest`.
+This step is required before running `deploy.sh`. The deploy script defaults to `gcr.io/$PROJECT_ID/red-hat-lightspeed-mcp:latest`.
 
 **To update the MCP server**, repeat the above steps with a new tag or `:latest`.
 
@@ -423,14 +423,14 @@ docker pull quay.io/redhat-services-prod/insights-management-tenant/insights-mcp
 
 # Tag for Docker Hub (replace YOUR_USERNAME with your Docker Hub username)
 docker tag quay.io/redhat-services-prod/insights-management-tenant/insights-mcp/red-hat-lightspeed-mcp:latest \
-  docker.io/YOUR_USERNAME/insights-mcp:latest
+  docker.io/YOUR_USERNAME/red-hat-lightspeed-mcp:latest
 
 # Login and push to Docker Hub
 docker login
-docker push docker.io/YOUR_USERNAME/insights-mcp:latest
+docker push docker.io/YOUR_USERNAME/red-hat-lightspeed-mcp:latest
 
 # Deploy with Docker Hub image
-./deploy/cloudrun/deploy.sh --mcp-image docker.io/YOUR_USERNAME/insights-mcp:latest
+./deploy/cloudrun/deploy.sh --mcp-image docker.io/YOUR_USERNAME/red-hat-lightspeed-mcp:latest
 ```
 
 **Docker Hub Rate Limits:**
@@ -1750,7 +1750,7 @@ Use `--force` to skip the confirmation prompt:
 ```bash
 # Delete container images
 gcloud container images delete gcr.io/$GOOGLE_CLOUD_PROJECT/lightspeed-agent --force-delete-tags --quiet
-gcloud container images delete gcr.io/$GOOGLE_CLOUD_PROJECT/insights-mcp --force-delete-tags --quiet
+gcloud container images delete gcr.io/$GOOGLE_CLOUD_PROJECT/red-hat-lightspeed-mcp --force-delete-tags --quiet
 
 # Delete Cloud SQL instance (if created)
 gcloud sql instances delete INSTANCE_NAME --project=$GOOGLE_CLOUD_PROJECT
