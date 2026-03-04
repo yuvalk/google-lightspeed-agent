@@ -131,7 +131,19 @@ The Lightspeed Agent requires the Red Hat Lightspeed MCP server to be running to
      http --port 8080 --host 0.0.0.0
    ```
 
-2. **Run the agent** using one of these methods:
+2. **Start Redis** (required for API Server rate limiting):
+   ```bash
+   # Option A: Podman (recommended)
+   podman kube play deploy/podman/redis-pod.yaml
+
+   # Option B: Standalone container
+   podman run -d -p 6379:6379 --name redis docker.io/library/redis:7-alpine
+
+   # Option C: Local Redis (if installed)
+   redis-server
+   ```
+
+3. **Run the agent** using one of these methods:
 
    **Development UI (ADK Web):**
    ```bash
@@ -155,6 +167,9 @@ For production-like deployment with all services (agent, MCP server, database):
 ```bash
 # Deploy secrets first (see Container Deployment for setup)
 podman kube play deploy/podman/my-secrets.yaml
+
+# Start Redis first (required for rate limiting)
+podman kube play deploy/podman/redis-pod.yaml
 
 # Start all services
 podman kube play \
