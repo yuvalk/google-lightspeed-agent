@@ -17,9 +17,8 @@ spec:
   restartPolicy: Always
   containers:
     - name: redis
-      image: docker.io/library/redis:7-alpine
+      image: quay.io/fedora/redis-7
       args:
-        - "redis-server"
         - "--appendonly"
         - "yes"
       ports:
@@ -31,7 +30,7 @@ spec:
           memory: 256Mi
       volumeMounts:
         - name: redis-data
-          mountPath: /data:Z
+          mountPath: /var/lib/redis/data:Z
   volumes:
     - name: redis-data
       emptyDir: {}
