@@ -81,6 +81,8 @@ log_info "Enabling required GCP APIs..."
 # - pubsub: Receive marketplace procurement events
 # - servicecontrol: Report usage metrics for billing
 # - servicemanagement: Manage service configuration
+# - redis: Cloud Memorystore for Redis (rate limiting backend)
+# - vpcaccess: Serverless VPC Access connectors (Cloud Run to Redis)
 apis=(
     "run.googleapis.com"
     "cloudbuild.googleapis.com"
@@ -90,6 +92,8 @@ apis=(
     "pubsub.googleapis.com"
     "servicecontrol.googleapis.com"
     "servicemanagement.googleapis.com"
+    "redis.googleapis.com"
+    "vpcaccess.googleapis.com"
 )
 
 for api in "${apis[@]}"; do
@@ -172,8 +176,13 @@ db_secrets=(
     "session-database-url"      # Session DB: postgresql+asyncpg://user:pass@/db?host=/cloudsql/...
 )
 
+# Rate limiting (Redis - REQUIRED for agent)
+redis_secrets=(
+    "rate-limit-redis-url"      # redis://REDIS_IP:6379/0 (Cloud Memorystore instance)
+)
+
 # Combine all optional secrets
-optional_secrets=("${dcr_secrets[@]}" "${db_secrets[@]}")
+optional_secrets=("${dcr_secrets[@]}" "${db_secrets[@]}" "${redis_secrets[@]}")
 
 for secret in "${secrets[@]}"; do
     if ! gcloud secrets describe "$secret" --project="$PROJECT_ID" &>/dev/null; then
@@ -321,6 +330,9 @@ echo "   # Database URLs (after Cloud SQL setup)"
 echo "   CONNECTION_NAME=\$(gcloud sql instances describe $DB_INSTANCE_NAME --project=$PROJECT_ID --format='value(connectionName)')"
 echo "   echo -n \"postgresql+asyncpg://insights:\$MARKETPLACE_DB_PASSWORD@/lightspeed_agent?host=/cloudsql/\$CONNECTION_NAME\" | gcloud secrets versions add database-url --data-file=- --project=$PROJECT_ID"
 echo "   echo -n \"postgresql+asyncpg://sessions:\$SESSION_DB_PASSWORD@/agent_sessions?host=/cloudsql/\$CONNECTION_NAME\" | gcloud secrets versions add session-database-url --data-file=- --project=$PROJECT_ID"
+echo ""
+echo "   # Rate limit Redis URL (after Cloud Memorystore setup - see deploy/cloudrun/README.md)"
+echo "   echo -n 'redis://REDIS_IP:6379/0' | gcloud secrets versions add rate-limit-redis-url --data-file=- --project=$PROJECT_ID"
 echo ""
 echo "3. Copy the MCP server image to GCR (Cloud Run doesn't support Quay.io):"
 echo "   docker pull quay.io/redhat-services-prod/insights-management-tenant/insights-mcp/red-hat-lightspeed-mcp:latest"

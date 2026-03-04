@@ -4,7 +4,7 @@ Deploy the Red Hat Lightspeed Agent for Google Cloud to Google Cloud Run for pro
 
 ## Architecture
 
-The deployment consists of **two separate Cloud Run services**:
+The deployment consists of **two separate Cloud Run services** plus **Cloud Memorystore for Redis** (for rate limiting):
 
 ```
                               Google Cloud Marketplace
@@ -58,8 +58,9 @@ The deployment consists of **two separate Cloud Run services**:
 
 ### Deployment Order
 
-1. **Deploy Marketplace Handler first** - Must be running to receive provisioning events
-2. **Deploy Agent after provisioning** - Can be deployed when customers are ready to use the agent
+1. **Set up Cloud Memorystore Redis and VPC connector** - Required for agent rate limiting (see [Redis Setup](#redis-setup-for-rate-limiting))
+2. **Deploy Marketplace Handler first** - Must be running to receive provisioning events
+3. **Deploy Agent after provisioning** - Can be deployed when customers are ready to use the agent
 
 The MCP server runs as a sidecar in the Agent service. The agent forwards the caller's JWT token to the MCP server, which uses it to authenticate with console.redhat.com on behalf of the user. Alternatively, if Lightspeed service account credentials are configured, the agent sends those instead (see [MCP Authentication](#mcp-authentication)).
 
@@ -123,6 +124,7 @@ The setup script enables required APIs, creates service accounts (runtime + Pub/
 | `SERVICE_ACCOUNT_NAME` | `${SERVICE_NAME}` | GCP service account name (allows a different name than the Cloud Run service) |
 | `HANDLER_SERVICE_NAME` | `marketplace-handler` | Marketplace handler Cloud Run service name |
 | `DB_INSTANCE_NAME` | `lightspeed-agent-db` | Cloud SQL instance name |
+| `VPC_CONNECTOR_NAME` | `lightspeed-redis-connector` | Serverless VPC Access connector for Redis |
 | `PUBSUB_INVOKER_NAME` | `pubsub-invoker` | Pub/Sub invoker SA name |
 | `PUBSUB_TOPIC` | `marketplace-entitlements` | Pub/Sub topic name for marketplace events |
 | `ENABLE_MARKETPLACE` | `true` | Create Pub/Sub invoker SA and topic for marketplace integration |
@@ -174,7 +176,60 @@ CONNECTION_NAME=$(gcloud sql instances describe $DB_INSTANCE_NAME \
 echo "Connection name: $CONNECTION_NAME"
 ```
 
-### 4. Configure Secrets
+### 4. Redis Setup for Rate Limiting
+
+The agent uses Redis for distributed rate limiting. On Cloud Run, use **Cloud Memorystore for Redis** with a **Serverless VPC Access connector** so the agent can reach the Redis instance.
+
+**Step 1: Create a VPC connector** (if you don't have one):
+
+```bash
+# Create a Serverless VPC Access connector in the same region as Cloud Run
+# Use the default network or your custom VPC. The subnet range must not overlap with existing subnets.
+# Check available ranges: gcloud compute networks subnets list --network=default --filter="region:$GOOGLE_CLOUD_LOCATION"
+gcloud compute networks vpc-access connectors create lightspeed-redis-connector \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --network=default \
+  --range=10.8.0.0/28 \
+  --project=$GOOGLE_CLOUD_PROJECT
+```
+
+**Step 2: Create a Redis instance** in the same VPC network:
+
+```bash
+# Create a Basic tier Redis instance (smallest, cost-effective for rate limiting)
+gcloud redis instances create lightspeed-redis \
+  --size=1 \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --redis-version=redis_7_0 \
+  --network=default \
+  --project=$GOOGLE_CLOUD_PROJECT
+
+# Get the Redis host IP
+REDIS_HOST=$(gcloud redis instances describe lightspeed-redis \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --format='value(host)')
+echo "Redis host: $REDIS_HOST"
+```
+
+**Step 3: Store the Redis URL in Secret Manager**:
+
+```bash
+# Redis uses port 6379 by default
+echo -n "redis://${REDIS_HOST}:6379/0" | \
+  gcloud secrets versions add rate-limit-redis-url --data-file=- --project=$GOOGLE_CLOUD_PROJECT
+```
+
+**Step 4: Set the VPC connector name** (if different from default):
+
+```bash
+# Default is lightspeed-redis-connector; override if you used a different name
+export VPC_CONNECTOR_NAME="lightspeed-redis-connector"
+```
+
+See [Connect to Redis from Cloud Run](https://cloud.google.com/run/docs/integrate/redis-memorystore) for more details.
+
+### 5. Configure Secrets
 
 Update the placeholder secrets with actual values:
 
@@ -204,9 +259,13 @@ echo -n "postgresql+asyncpg://insights:$MARKETPLACE_DB_PASSWORD@/lightspeed_agen
 # Session database: stores agent sessions (required for persistence)
 echo -n "postgresql+asyncpg://sessions:$SESSION_DB_PASSWORD@/agent_sessions?host=/cloudsql/$CONNECTION_NAME" | \
   gcloud secrets versions add session-database-url --data-file=- --project=$GOOGLE_CLOUD_PROJECT
+
+# Rate limit Redis URL (required). As instructed in Redis Setup step 3 after creating the Redis instance.
+# REDIS_HOST=$(gcloud redis instances describe lightspeed-redis --region=$GOOGLE_CLOUD_LOCATION --project=$GOOGLE_CLOUD_PROJECT --format='value(host)')
+# echo -n "redis://${REDIS_HOST}:6379/0" | gcloud secrets versions add rate-limit-redis-url --data-file=- --project=$GOOGLE_CLOUD_PROJECT
 ```
 
-### 5. Copy MCP Image to GCR
+### 6. Copy MCP Image to GCR
 
 Cloud Run doesn't support Quay.io directly. Copy the MCP server image to GCR.
 
@@ -241,7 +300,7 @@ docker tag quay.io/redhat-services-prod/insights-management-tenant/insights-mcp/
 docker push gcr.io/$GOOGLE_CLOUD_PROJECT/red-hat-lightspeed-mcp:latest
 ```
 
-### 6. Deploy
+### 7. Deploy
 
 The agent's AgentCard advertises the DCR endpoints served by the
 marketplace-handler service. Because of this, the **handler must be
@@ -317,13 +376,19 @@ curl -s $AGENT_URL/.well-known/agent.json | jq '.capabilities.extensions'
 | `all` | Both | Deploy both services |
 
 The deploy script performs variable substitution on the YAML configs
-(`${PROJECT_ID}`, `${REGION}`, image references) and deploys using
-`gcloud run services replace`. To deploy manually without the script:
+(`${PROJECT_ID}`, `${REGION}`, image references, etc.) and deploys using
+`gcloud run services replace`. For manual
+deployment without the script, substitute all `${...}` variables in the YAML before running
+`gcloud run services replace`:
 
 ```bash
-# Substitute variables and deploy the agent
 sed -e "s|\${PROJECT_ID}|$GOOGLE_CLOUD_PROJECT|g" \
     -e "s|\${REGION}|$GOOGLE_CLOUD_LOCATION|g" \
+    -e "s|\${DB_INSTANCE_NAME}|${DB_INSTANCE_NAME:-lightspeed-agent-db}|g" \
+    -e "s|\${VPC_CONNECTOR_NAME}|${VPC_CONNECTOR_NAME:-lightspeed-redis-connector}|g" \
+    -e "s|\${SERVICE_NAME}|${SERVICE_NAME:-lightspeed-agent}|g" \
+    -e "s|\${SERVICE_ACCOUNT_NAME}|${SERVICE_ACCOUNT_NAME:-lightspeed-agent}|g" \
+    -e "s|\${MCP_IMAGE}|${MCP_IMAGE:-gcr.io/$GOOGLE_CLOUD_PROJECT/insights-mcp:latest}|g" \
     deploy/cloudrun/service.yaml | \
     gcloud run services replace - --region=$GOOGLE_CLOUD_LOCATION --project=$GOOGLE_CLOUD_PROJECT
 ```
@@ -337,6 +402,20 @@ sed -e "s|\${PROJECT_ID}|$GOOGLE_CLOUD_PROJECT|g" \
 | CPU | 2 | vCPUs allocated |
 | Memory | 2Gi | Memory limit |
 | Port | 8000 | Container port |
+
+### Rate Limiting (Redis)
+
+The agent uses Cloud Memorystore for Redis for distributed rate limiting. Required configuration:
+
+| Variable | Source | Description |
+|----------|--------|-------------|
+| `RATE_LIMIT_REDIS_URL` | Secret `rate-limit-redis-url` | Redis connection URL (e.g. `redis://10.x.x.x:6379/0`) |
+| `RATE_LIMIT_REDIS_TIMEOUT_MS` | Env | Redis operation timeout (default: 200) |
+| `RATE_LIMIT_KEY_PREFIX` | Env | Key prefix for rate limit keys |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE` | Env | Max requests per minute per principal |
+| `RATE_LIMIT_REQUESTS_PER_HOUR` | Env | Max requests per hour per principal |
+
+The service uses a VPC connector to reach the Redis instance. Set `VPC_CONNECTOR_NAME` (default: `lightspeed-redis-connector`) when deploying.
 
 ### MCP Server Sidecar
 

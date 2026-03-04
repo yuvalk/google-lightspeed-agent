@@ -34,6 +34,9 @@ spec:
         run.googleapis.com/startup-cpu-boost: "true"
         # Cloud SQL connection
         run.googleapis.com/cloudsql-instances: "${PROJECT_ID}:${REGION}:${DB_INSTANCE_NAME}"
+        # VPC connector for Cloud Memorystore Redis (rate limiting)
+        run.googleapis.com/vpc-access-connector: projects/${PROJECT_ID}/locations/${REGION}/connectors/${VPC_CONNECTOR_NAME}
+        run.googleapis.com/vpc-access-egress: private-ranges-only
     spec:
       containerConcurrency: 80
       timeoutSeconds: 300
@@ -148,6 +151,20 @@ spec:
                 secretKeyRef:
                   name: dcr-encryption-key
                   key: latest
+            # Rate Limiting (Redis-backed, required for API Server)
+            - name: RATE_LIMIT_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rate-limit-redis-url
+                  key: latest
+            - name: RATE_LIMIT_REDIS_TIMEOUT_MS
+              value: "200"
+            - name: RATE_LIMIT_KEY_PREFIX
+              value: "lightspeed:ratelimit"
+            - name: RATE_LIMIT_REQUESTS_PER_MINUTE
+              value: "60"
+            - name: RATE_LIMIT_REQUESTS_PER_HOUR
+              value: "1000"
           # Health checks
           startupProbe:
             httpGet:
