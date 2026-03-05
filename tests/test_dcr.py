@@ -306,43 +306,13 @@ class TestDCRRouter:
         return TestClient(app)
 
     @pytest.mark.asyncio
-    async def test_register_endpoint_invalid_jwt(self, client):
-        """Test register endpoint with invalid JWT."""
-        response = client.post(
-            "/oauth/register",
-            json={"software_statement": "invalid-jwt-token"},
-        )
-
-        assert response.status_code == 400
-        data = response.json()
-        assert data["error"] == "invalid_software_statement"
-
-    @pytest.mark.asyncio
-    async def test_register_endpoint_missing_software_statement(self, client):
-        """Test register endpoint with missing software_statement."""
-        response = client.post(
-            "/oauth/register",
-            json={},
-        )
-
-        assert response.status_code == 422  # Validation error
-
-    @pytest.mark.asyncio
-    async def test_get_client_not_found(self, client):
-        """Test getting nonexistent client."""
-        response = client.get("/oauth/register/nonexistent-client")
-
-        assert response.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_dcr_endpoint_alias(self, client):
-        """Test /dcr endpoint (Google-compatible alias)."""
+    async def test_dcr_endpoint_invalid_jwt(self, client):
+        """Test /dcr endpoint with invalid JWT."""
         response = client.post(
             "/dcr",
             json={"software_statement": "invalid-jwt-token"},
         )
 
-        # Should work same as /oauth/register
         assert response.status_code == 400
         data = response.json()
         assert data["error"] == "invalid_software_statement"
@@ -364,7 +334,7 @@ class TestAgentCardDCRExtension:
         assert "dcr" in dcr_ext.uri
         assert dcr_ext.params is not None
         assert "endpoint" in dcr_ext.params
-        assert "/oauth/register" in dcr_ext.params["endpoint"]
+        assert "/dcr" in dcr_ext.params["endpoint"]
 
     @pytest.mark.asyncio
     async def test_agent_card_endpoint_returns_dcr(self, db_session):

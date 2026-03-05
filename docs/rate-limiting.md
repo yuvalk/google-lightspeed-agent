@@ -166,30 +166,6 @@ The agent has two separate systems for managing API usage:
 
 Rate limiting happens **before** the request is processed (at the middleware layer), while usage tracking happens **during** request processing (via ADK plugin callbacks).
 
-## Usage Statistics
-
-Token usage and request counts are tracked via the `UsageTrackingPlugin` (using ADK's plugin system). Access aggregate statistics at:
-
-```bash
-curl http://localhost:8000/usage
-```
-
-Response:
-```json
-{
-  "status": "ok",
-  "usage": {
-    "total_input_tokens": 1234,
-    "total_output_tokens": 5678,
-    "total_tokens": 6912,
-    "total_requests": 42,
-    "total_tool_calls": 15
-  }
-}
-```
-
-See [Usage Tracking and Metering](metering.md) for detailed documentation on the plugin system and how to extend it for production use.
-
 ## Notes
 
 - Rate limits are enforced across replicas as long as they share the same Redis instance.

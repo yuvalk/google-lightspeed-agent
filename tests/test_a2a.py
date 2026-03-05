@@ -2,7 +2,6 @@
 
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from a2a.types import (
     AgentCapabilities,
@@ -195,30 +194,6 @@ class TestA2AEndpoints:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "ready"
-
-    def test_usage_endpoint(self, client):
-        """Test /usage endpoint."""
-        usage_repo = MagicMock()
-        usage_repo.get_usage_by_order = AsyncMock(
-            return_value={
-                "order-123": {
-                    "total_input_tokens": 10,
-                    "total_output_tokens": 5,
-                    "total_tokens": 15,
-                    "total_requests": 2,
-                    "total_tool_calls": 1,
-                }
-            }
-        )
-
-        with patch("lightspeed_agent.api.app.get_usage_repository", return_value=usage_repo):
-            response = client.get("/usage")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "ok"
-        assert "usage_by_order" in data
-        assert "order-123" in data["usage_by_order"]
 
     def test_send_message_jsonrpc(self, client):
         """Test / endpoint with JSON-RPC message/send."""

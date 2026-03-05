@@ -620,11 +620,10 @@ The system supports Dynamic Client Registration for Google Marketplace / Gemini 
 | Service | Endpoint | Description |
 |---------|----------|-------------|
 | Handler (8001) | `POST /dcr` | Hybrid endpoint for Pub/Sub and DCR requests |
-| Agent (8000) | `POST /oauth/register` | RFC 7591 compliant path (forwards to handler) |
 
 The `/dcr` endpoint on the handler accepts both Pub/Sub procurement events and DCR registration requests, routing based on content.
 
-### POST /oauth/register (or POST /dcr)
+### POST /dcr
 
 Register a new OAuth client dynamically. Gemini Enterprise sends a signed JWT containing the order information.
 
@@ -750,29 +749,6 @@ Readiness check endpoint indicating the service is ready to accept requests.
 | -32000 | Task not found | Referenced task doesn't exist |
 | -32001 | Task canceled | Task was canceled |
 
-## Usage Tracking
-
-### GET /usage
-
-Get aggregate usage statistics for the agent.
-
-**Authentication**: Not required
-
-**Response:**
-
-```json
-{
-  "status": "ok",
-  "usage": {
-    "total_input_tokens": 12345,
-    "total_output_tokens": 67890,
-    "total_tokens": 80235,
-    "total_requests": 150,
-    "total_tool_calls": 75
-  }
-}
-```
-
 ## Rate Limiting
 
 The API enforces global rate limits to prevent abuse:
@@ -839,9 +815,6 @@ curl http://localhost:8000/.well-known/agent.json
 
 # Health check
 curl http://localhost:8000/health
-
-# Get usage statistics
-curl http://localhost:8000/usage
 
 # Send message (with auth)
 curl -X POST http://localhost:8000/ \

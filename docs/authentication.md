@@ -279,7 +279,6 @@ curl -X POST http://localhost:8000/ \
 | `GET /health` | Public |
 | `GET /ready` | Public |
 | `GET /.well-known/agent.json` | Public |
-| `GET /usage` | Public |
 | `POST /` | Required (A2A JSON-RPC) |
 
 ## Red Hat SSO Configuration
