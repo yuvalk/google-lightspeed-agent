@@ -135,6 +135,26 @@ done
 
 You should see 429 responses after 60 requests.
 
+### Cloud Run
+
+When the agent is deployed on Cloud Run, use your service URL and include a Bearer token (production typically requires authentication):
+
+```bash
+SERVICE_URL="https://your-service-xxxx-uc.a.run.app"  # Your Cloud Run URL
+TOKEN="your-oauth-token"  # From DCR client_credentials or SSO
+
+for i in {1..70}; do
+  echo -n "Request $i: "
+  curl -s -o /dev/null -w "%{http_code}\n" \
+    -X POST "$SERVICE_URL/" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TOKEN" \
+    -d '{"jsonrpc":"2.0","method":"message/send","id":'$i',"params":{"message":{"role":"user","parts":[{"type":"text","text":"test"}]}}}'
+done
+```
+
+With authentication, rate limits apply per `order_id` and `user_id` (from the token) instead of per IP. Redis (Cloud Memorystore) is internal to the VPC and cannot be inspected with `redis-cli` from outside.
+
 ## Rate Limiting vs Usage Tracking
 
 The agent has two separate systems for managing API usage:

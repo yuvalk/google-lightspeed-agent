@@ -415,7 +415,7 @@ The agent uses Cloud Memorystore for Redis for distributed rate limiting. Requir
 | `RATE_LIMIT_REQUESTS_PER_MINUTE` | Env | Max requests per minute per principal |
 | `RATE_LIMIT_REQUESTS_PER_HOUR` | Env | Max requests per hour per principal |
 
-The service uses a VPC connector to reach the Redis instance. Set `VPC_CONNECTOR_NAME` (default: `lightspeed-redis-conn`) when deploying.
+The service uses a VPC connector to reach the Redis instance. Set `VPC_CONNECTOR_NAME` (default: `lightspeed-redis-conn`) when deploying. See [Rate Limiting — Testing](../../docs/rate-limiting.md#testing-rate-limiting) for how to validate rate limiting.
 
 ### MCP Server Sidecar
 
