@@ -679,7 +679,6 @@ After deployment, the following endpoints are available:
 | `GET /health` | Health check |
 | `GET /ready` | Readiness check |
 | `POST /dcr` | Hybrid endpoint (Pub/Sub events + DCR requests) |
-| `POST /oauth/register` | DCR endpoint (RFC 7591 compliant path) |
 
 ### Lightspeed Agent Service
 
@@ -689,7 +688,6 @@ After deployment, the following endpoints are available:
 | `GET /ready` | Readiness check |
 | `GET /.well-known/agent.json` | A2A AgentCard (public) |
 | `POST /` | A2A JSON-RPC endpoint (message/send, message/stream) |
-| `GET /usage` | Aggregate usage statistics |
 
 ## Testing the Deployment
 
@@ -913,9 +911,6 @@ curl -X POST http://localhost:8099/ \
 ```bash
 # Check health endpoint (no auth required)
 curl http://localhost:8099/health | jq .
-
-# Get usage statistics
-curl http://localhost:8099/usage | jq .
 
 # Get agent card (should show http://localhost:8099/)
 curl http://localhost:8099/.well-known/agent-card.json | jq -r '.url'

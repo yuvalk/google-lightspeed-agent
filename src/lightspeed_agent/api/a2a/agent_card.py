@@ -75,10 +75,6 @@ def _build_dcr_extension() -> AgentExtension:
     DCR is handled by the marketplace-handler service, which is separate
     from the agent service. The marketplace handler URL should be configured
     via MARKETPLACE_HANDLER_URL environment variable.
-
-    Provides two endpoints for DCR:
-    - /oauth/register - RFC 7591 compliant path
-    - /dcr - Google-compatible path (per Google's example)
     """
     settings = get_settings()
 
@@ -90,10 +86,7 @@ def _build_dcr_extension() -> AgentExtension:
         uri="urn:google:agent:dcr",
         description="Dynamic Client Registration for OAuth 2.0",
         params={
-            # Primary endpoint (RFC 7591 compliant)
-            "endpoint": f"{handler_url}/oauth/register",
-            # Alternative endpoint (Google example path)
-            "alternativeEndpoint": f"{handler_url}/dcr",
+            "endpoint": f"{handler_url}/dcr",
             "supportedGrantTypes": ["authorization_code", "refresh_token"],
         },
     )

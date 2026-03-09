@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from lightspeed_agent.config import get_settings
-from lightspeed_agent.dcr import DCRError, DCRRequest, DCRResponse, get_dcr_service
+from lightspeed_agent.dcr import DCRError, DCRRequest, get_dcr_service
 from lightspeed_agent.marketplace.models import ProcurementEvent, ProcurementEventType
 from lightspeed_agent.marketplace.service import get_procurement_service
 
@@ -233,50 +233,4 @@ def _build_procurement_event(
         provider_id=provider_id,
         account=account_info,
         entitlement=entitlement_info,
-    )
-
-
-# Also expose the standard DCR endpoints for compatibility
-@router.post("/oauth/register", response_model=DCRResponse)
-async def register_client(request: Request) -> JSONResponse:
-    """RFC 7591 compliant DCR endpoint.
-
-    Alternative to /dcr for clients that expect the standard path.
-    """
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
-
-    if "software_statement" not in body:
-        raise HTTPException(status_code=422, detail="software_statement is required")
-
-    return await _handle_dcr_request(body)
-
-
-@router.get("/oauth/register/{client_id}")
-async def get_client(client_id: str) -> JSONResponse:
-    """Get information about a registered client.
-
-    Args:
-        client_id: The OAuth client ID.
-
-    Returns:
-        Client information (without secret).
-    """
-    dcr_service = get_dcr_service()
-    client = await dcr_service.get_client(client_id)
-
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
-
-    return JSONResponse(
-        content={
-            "client_id": client.client_id,
-            "order_id": client.order_id,
-            "account_id": client.account_id,
-            "redirect_uris": client.redirect_uris,
-            "grant_types": client.grant_types,
-            "created_at": client.created_at.isoformat() if client.created_at else None,
-        }
     )

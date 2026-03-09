@@ -60,7 +60,6 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
         "/redoc",
         "/.well-known/agent.json",
         "/.well-known/agent-card.json",
-        "/oauth/register",  # DCR endpoint uses software_statement JWT
         "/marketplace/pubsub",  # Pub/Sub uses Google-signed tokens
     }
 

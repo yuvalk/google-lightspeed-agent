@@ -18,7 +18,6 @@ from lightspeed_agent.api.a2a.a2a_setup import setup_a2a_routes
 from lightspeed_agent.api.a2a.agent_card import get_agent_card_dict
 from lightspeed_agent.auth import AuthenticationMiddleware
 from lightspeed_agent.config import get_settings
-from lightspeed_agent.metering import get_usage_repository
 from lightspeed_agent.ratelimit import RateLimitMiddleware, get_redis_rate_limiter
 
 logger = logging.getLogger(__name__)
@@ -41,7 +40,8 @@ async def lifespan(app: FastAPI):
     try:
         from lightspeed_agent.db import init_database
 
-        logger.info("Initializing database: %s", settings.database_url.split("@")[-1])
+        logger.info("Initializing database: %s",
+                    settings.database_url.split("@")[-1])
         await init_database()
         logger.info("Database initialized successfully")
     except Exception as e:
@@ -49,7 +49,8 @@ async def lifespan(app: FastAPI):
         raise
 
     # Startup: Start the usage reporting scheduler
-    if settings.service_control_enabled and settings.service_control_service_name:
+    if (settings.service_control_enabled and
+            settings.service_control_service_name):
         try:
             from lightspeed_agent.service_control import start_reporting_scheduler
 
@@ -128,22 +129,11 @@ def create_app() -> FastAPI:
     # event conversion automatically.
     setup_a2a_routes(app)
 
-    # Alias for agent card (some clients use agent-card.json instead of agent.json)
+    # Alias for agent card (some clients use agent-card.json)
     @app.get("/.well-known/agent-card.json")
     async def agent_card_alias() -> dict:
         """AgentCard endpoint (alias for agent.json)."""
         return get_agent_card_dict()
-
-    # Usage statistics endpoint
-    # Returns per-order usage metrics from the persistence layer.
-    @app.get("/usage")
-    async def get_usage_stats() -> dict:
-        """Get per-order usage statistics."""
-        usage_repo = get_usage_repository()
-        return {
-            "status": "ok",
-            "usage_by_order": await usage_repo.get_usage_by_order(),
-        }
 
     # Add rate limiting middleware
     app.add_middleware(RateLimitMiddleware)

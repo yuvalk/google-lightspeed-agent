@@ -313,33 +313,6 @@ class UsageRepository:
                 for r in result.all()
             ]
 
-    async def get_usage_by_order(self) -> dict[str, dict[str, int]]:
-        """Return cumulative usage totals grouped by order_id."""
-        async with get_session() as session:
-            result = await session.execute(
-                select(
-                    UsageRecordModel.order_id,
-                    func.sum(UsageRecordModel.request_count),
-                    func.sum(UsageRecordModel.input_tokens),
-                    func.sum(UsageRecordModel.output_tokens),
-                    func.sum(UsageRecordModel.tool_calls),
-                ).group_by(UsageRecordModel.order_id)
-            )
-            rows = result.all()
-
-        usage_by_order: dict[str, dict[str, int]] = {}
-        for order_id, total_requests, total_input, total_output, total_tools in rows:
-            in_tokens = int(total_input or 0)
-            out_tokens = int(total_output or 0)
-            usage_by_order[order_id] = {
-                "total_input_tokens": in_tokens,
-                "total_output_tokens": out_tokens,
-                "total_tokens": in_tokens + out_tokens,
-                "total_requests": int(total_requests or 0),
-                "total_tool_calls": int(total_tools or 0),
-            }
-        return usage_by_order
-
 
 _usage_repo: UsageRepository | None = None
 

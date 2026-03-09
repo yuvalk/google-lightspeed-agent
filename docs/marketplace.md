@@ -93,8 +93,7 @@ The AgentCard (served by the Agent on port 8000) advertises DCR support and poin
         "uri": "urn:google:agent:dcr",
         "description": "Dynamic Client Registration for OAuth 2.0",
         "params": {
-          "endpoint": "https://handler.example.com/oauth/register",
-          "alternativeEndpoint": "https://handler.example.com/dcr",
+          "endpoint": "https://handler.example.com/dcr",
           "supportedGrantTypes": ["authorization_code", "refresh_token"]
         }
       }

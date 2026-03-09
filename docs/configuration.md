@@ -223,7 +223,7 @@ Usage tracking is built into the agent via the ADK plugin system. No configurati
 |----------|---------|-------------|
 | `LOG_LEVEL` | `INFO` | Set to `DEBUG` to see detailed usage logs |
 
-Access usage statistics via the `/usage` endpoint. See [Usage Tracking and Metering](metering.md) for details on the plugin system and how to extend it.
+See [Usage Tracking and Metering](metering.md) for details on the plugin system and how to extend it.
 
 ### Logging
 

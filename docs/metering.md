@@ -42,11 +42,6 @@ All usage tracking is handled by the `UsageTrackingPlugin` in `src/lightspeed_ag
 │                                    ▼                                    │
 │                    UsageRepository (DB-backed, per-order)                │
 └─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         GET /usage endpoint                             │
-└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## ADK Plugin System
@@ -168,36 +163,6 @@ Key methods:
 - `increment_usage()`: Persist usage increments (called by `UsageTrackingPlugin`)
 - `claim_unreported_rows_for_reporting()`: Atomically claim rows for Service Control reporting
 - `mark_reported_by_ids()` / `release_claimed_rows()`: Mark reported or release on failure
-- `get_usage_by_order()`: Aggregate totals by order (for GET /usage endpoint)
-
-## API Endpoint
-
-### GET /usage
-
-Returns aggregate usage statistics.
-
-**Authentication**: Not required
-
-```bash
-curl http://localhost:8000/usage
-```
-
-**Response:**
-
-```json
-{
-  "status": "ok",
-  "usage_by_order": {
-    "order-123": {
-      "total_input_tokens": 12345,
-      "total_output_tokens": 45678,
-      "total_tokens": 58023,
-      "total_requests": 150,
-      "total_tool_calls": 75
-    }
-  }
-}
-```
 
 ## Rate Limiting
 
@@ -337,7 +302,6 @@ app = App(
 - **Retry on failure**: Failed reports are queued and retried with configurable max attempts; rows are released on failure for re-claim on retry
 - **Stale claim recovery**: Rows claimed by a crashed worker (never marked or released) are released at the start of each hourly run; threshold configurable via `METERING_STALE_CLAIM_MINUTES`
 - **Automatic backfill**: Unreported periods (from scheduler downtime or stale releases) are reported on each hourly run; configurable via `METERING_BACKFILL_MAX_AGE_HOURS` (default 7 days) and `METERING_BACKFILL_LIMIT_PER_RUN` (default 20)
-- **GET /usage endpoint**: Returns per-order aggregate totals (requests, tokens, tool calls)
 
 ## Configuration
 
@@ -352,9 +316,6 @@ app = App(
 ```bash
 # Start the server
 python -m lightspeed_agent.main
-
-# Check initial usage
-curl http://localhost:8000/usage
 
 # Make A2A requests
 curl -X POST http://localhost:8000/ \
@@ -372,8 +333,6 @@ curl -X POST http://localhost:8000/ \
     }
   }'
 
-# Check updated usage
-curl http://localhost:8000/usage
 ```
 
 ## References
