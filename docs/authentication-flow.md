@@ -253,7 +253,7 @@ Customer User          Gemini Enterprise            Red Hat SSO (Keycloak)      
      |   to Red Hat SSO      |                              |                              |
      |   /auth?              |                              |                              |
      |   response_type=code  |                              |                              |
-     |   client_id=<dcr_id>  |                              |                              |
+     |   client_id=<ge_id>   |                              |                              |
      |   redirect_uri=<uri>  |                              |                              |
      |   scope=openid        |                              |                              |
      |     agent:insights    |                              |                              |
@@ -280,8 +280,8 @@ Customer User          Gemini Enterprise            Red Hat SSO (Keycloak)      
      |                       |     authorization_code       |                              |
      |                       |   code=<auth_code>           |                              |
      |                       |   redirect_uri=<callback>    |                              |
-     |                       |   client_id=<dcr_client_id>  |                              |
-     |                       |   client_secret=<dcr_secret> |                              |
+     |                       |   client_id=<ge_client_id>   |                              |
+     |                       |   client_secret=<ge_secret>  |                              |
      |                       |----------------------------->|                              |
      |                       |                              |                              |
      |                       |<-- {                         |                              |
@@ -304,8 +304,9 @@ Customer User          Gemini Enterprise            Red Hat SSO (Keycloak)      
 2. Gemini Enterprise redirects the user's browser to the Red Hat SSO
    authorization endpoint with:
    - `response_type=code` (authorization code flow)
-   - `client_id` = the DCR-created (or static) client ID linked to this order
-   - `redirect_uri` = Gemini Enterprise's callback URL (from the DCR
+   - `client_id` = the Gemini Enterprise client ID linked to this order
+     (created via DCR or provided as static credentials)
+   - `redirect_uri` = Gemini Enterprise's callback URL (from the registration
      `redirect_uris`)
    - `scope` = `openid agent:insights`
    - `state` = CSRF protection token
@@ -356,7 +357,7 @@ Gemini Enterprise                  Lightspeed Agent                      Red Hat
      |                                    |<-- {                                  |
      |                                    |      "active": true,                  |
      |                                    |      "sub": "<user-id>",              |
-     |                                    |      "azp": "<dcr-client-id>",        |
+     |                                    |      "azp": "<ge-client-id>",         |
      |                                    |      "scope": "openid agent:insights",|
      |                                    |      "preferred_username": "jdoe",    |
      |                                    |      "email": "jdoe@example.com",     |
@@ -368,8 +369,8 @@ Gemini Enterprise                  Lightspeed Agent                      Red Hat
      |                                    |-- Verify "agent:insights" in scopes   |
      |                                    |                                       |
      |                                    |-- Resolve order:                      |
-     |                                    |   azp (dcr-client-id)                 |
-     |                                    |    → DCR DB lookup → order_id         |
+     |                                    |   azp (ge-client-id)                  |
+     |                                    |    → credentials DB → order_id        |
      |                                    |    → Entitlement DB → state == ACTIVE |
      |                                    |                                       |
      |                                    |-- Store token in ContextVar           |
@@ -392,7 +393,7 @@ Gemini Enterprise                  Lightspeed Agent                      Red Hat
       endpoint (`/protocol/openid-connect/token/introspect`). The agent
       authenticates this call using its **own** credentials
       (`RED_HAT_SSO_CLIENT_ID` / `RED_HAT_SSO_CLIENT_SECRET`), not the
-      DCR-created credentials. This is the standard Resource Server pattern —
+      Gemini Enterprise credentials. This is the standard Resource Server pattern —
       the agent's client credentials give it permission to introspect any
       token issued within the realm.
 
@@ -402,8 +403,8 @@ Gemini Enterprise                  Lightspeed Agent                      Red Hat
         If missing, the agent returns `403 Forbidden`.
 
    d. **Resolves the order**: Uses the `azp` (authorized party) claim from
-      the introspection response — this is the `client_id` of the DCR-created
-      client — to look up the corresponding `order_id` in the DCR database.
+      the introspection response — this is the Gemini Enterprise `client_id`
+      — to look up the corresponding `order_id` in the credentials database.
       Then verifies the marketplace entitlement for that `order_id` is in
       `ACTIVE` state. If the order is not found or not active, the agent
       returns `403 Forbidden`.
@@ -418,7 +419,7 @@ Gemini Enterprise                  Lightspeed Agent                      Red Hat
 | Credential | Owner | Purpose |
 |---|---|---|
 | `RED_HAT_SSO_CLIENT_ID` / `RED_HAT_SSO_CLIENT_SECRET` | The agent itself (Resource Server) | Authenticating to the introspection endpoint to validate incoming Bearer tokens |
-| DCR `client_id` / `client_secret` | Gemini Enterprise (OAuth Client) | Obtaining access tokens on behalf of users via the authorization code flow |
+| GE `client_id` / `client_secret` | Gemini Enterprise (OAuth Client) | Obtaining access tokens on behalf of users via the authorization code flow |
 
 ---
 
