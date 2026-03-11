@@ -93,7 +93,7 @@ def create_agent() -> LlmAgent:
 
     tools: list = []
 
-    # Always attempt to create MCP toolset - credentials are resolved dynamically
+    # Always attempt to create MCP toolset - caller's JWT is forwarded via header_provider
     try:
         from lightspeed_agent.tools import READ_ONLY_TOOLS, create_insights_toolset
 

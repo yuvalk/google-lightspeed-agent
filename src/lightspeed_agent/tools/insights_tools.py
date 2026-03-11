@@ -31,9 +31,8 @@ def create_insights_toolset(
     Args:
         config: Optional MCP server configuration. If None, loads from settings.
         tool_filter: Optional list of tool names to expose. If None, all tools are exposed.
-        use_dynamic_headers: If True, use header_provider for per-user credentials.
-            Headers are resolved from session state first, then fall back to
-            agent-level environment variables.
+        use_dynamic_headers: If True, forwards the caller's JWT token to the
+            MCP server via the Authorization header.
 
     Returns:
         Configured McpToolset instance.
