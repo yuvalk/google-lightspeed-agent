@@ -1,0 +1,166 @@
+# =============================================================================
+# Red Hat Lightspeed Agent - Helm Values
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Agent configuration
+# ---------------------------------------------------------------------------
+agent:
+  image:
+    repository: quay.io/ecosystem-appeng/lightspeed-agent
+    tag: latest
+    pullPolicy: Always
+  replicas: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  # Agent provider URL — override after the Route is created, or set a known hostname
+  providerUrl: "https://lightspeed-agent.apps.example.com"
+  name: lightspeed_agent
+  description: "Red Hat Lightspeed Agent"
+  host: "0.0.0.0"
+  port: 8000
+
+# ---------------------------------------------------------------------------
+# Red Hat Lightspeed MCP server (runs as sidecar in the agent pod)
+# ---------------------------------------------------------------------------
+mcp:
+  image:
+    repository: quay.io/redhat-services-prod/insights-management-tenant/insights-mcp/red-hat-lightspeed-mcp
+    tag: latest
+    pullPolicy: Always
+  transport: http
+  port: 8081
+  host: "0.0.0.0"
+  readOnly: true
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Google AI / Gemini
+# ---------------------------------------------------------------------------
+google:
+  # Set to true to use Vertex AI instead of Google AI Studio
+  useVertexAI: false
+  cloudLocation: us-central1
+  geminiModel: gemini-2.5-flash
+
+# ---------------------------------------------------------------------------
+# Red Hat SSO / OAuth 2.0
+# ---------------------------------------------------------------------------
+sso:
+  issuer: "https://sso.redhat.com/auth/realms/redhat-external"
+  requiredScope: "agent:insights"
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+auth:
+  # Skip JWT validation entirely (development only — do NOT enable in production)
+  skipJwtValidation: false
+  # Skip marketplace order-id validation while keeping JWT introspection.
+  # Should be true for OpenShift deployments without the Marketplace handler.
+  skipOrderValidation: true
+
+# ---------------------------------------------------------------------------
+# Rate limiting (Redis-backed)
+# ---------------------------------------------------------------------------
+rateLimit:
+  requestsPerMinute: 60
+  requestsPerHour: 1000
+  redisTimeoutMs: 200
+  keyPrefix: "lightspeed:ratelimit"
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging:
+  level: INFO
+  format: json
+
+# ---------------------------------------------------------------------------
+# OpenTelemetry
+# ---------------------------------------------------------------------------
+otel:
+  enabled: false
+  serviceName: lightspeed_agent
+  exporterType: otlp
+  otlpEndpoint: "http://localhost:4317"
+  otlpHttpEndpoint: "http://localhost:4318"
+  tracesSampler: always_on
+  tracesSamplerArg: "1.0"
+
+# ---------------------------------------------------------------------------
+# Session PostgreSQL database
+# ---------------------------------------------------------------------------
+postgresql:
+  image:
+    repository: registry.redhat.io/rhel9/postgresql-16
+    tag: latest
+    pullPolicy: IfNotPresent
+  user: sessions
+  database: agent_sessions
+  storage:
+    size: 1Gi
+    # storageClassName: ""   # uncomment to use a specific storage class
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Redis (rate limiting backend)
+# ---------------------------------------------------------------------------
+redis:
+  image:
+    repository: quay.io/fedora/redis-7
+    tag: latest
+    pullPolicy: IfNotPresent
+  storage:
+    size: 1Gi
+    # storageClassName: ""   # uncomment to use a specific storage class
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# Route
+# ---------------------------------------------------------------------------
+route:
+  enabled: true
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+# ---------------------------------------------------------------------------
+# Secrets — these are references only.
+# Create the Secret separately from the template (see secret.yaml)
+# or supply values here for the template to generate it.
+# ---------------------------------------------------------------------------
+secrets:
+  # Set to true to have the chart create the Secret from the values below.
+  # Set to false if you manage the Secret externally.
+  create: true
+  googleApiKey: "your-google-api-key"
+  googleCloudProject: ""
+  redHatSsoClientId: "your-sso-client-id"
+  redHatSsoClientSecret: "your-sso-client-secret"
+  sessionDbPassword: "sessions"
+  # Full connection URL (contains credentials, stored in the Secret)
+  sessionDatabaseUrl: "postgresql+asyncpg://sessions:sessions@lightspeed-agent-postgresql:5432/agent_sessions"

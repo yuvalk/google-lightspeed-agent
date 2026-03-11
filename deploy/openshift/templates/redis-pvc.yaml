@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "lightspeed-agent.fullname" . }}-redis-data
+  labels:
+    {{- include "lightspeed-agent.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ratelimit
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.redis.storage.size }}
+  {{- if .Values.redis.storage.storageClassName }}
+  storageClassName: {{ .Values.redis.storage.storageClassName | quote }}
+  {{- end }}

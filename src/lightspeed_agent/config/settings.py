@@ -254,6 +254,12 @@ class Settings(BaseSettings):
         default=False,
         description="Skip JWT validation (development only)",
     )
+    skip_order_validation: bool = Field(
+        default=False,
+        description="Skip marketplace order-id validation. When enabled, JWT token "
+        "introspection still occurs but the order/entitlement check is skipped. "
+        "Use for deployments without the Google Cloud Marketplace handler (e.g., OpenShift).",
+    )
 
     @model_validator(mode="after")
     def _block_skip_jwt_in_production(self) -> "Settings":

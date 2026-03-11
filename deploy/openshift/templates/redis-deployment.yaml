@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lightspeed-agent.redisServiceName" . }}
+  labels:
+    {{- include "lightspeed-agent.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ratelimit
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "lightspeed-agent.redisSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lightspeed-agent.redisSelectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: redis
+          image: {{ printf "%s:%s" .Values.redis.image.repository .Values.redis.image.tag }}
+          imagePullPolicy: {{ .Values.redis.image.pullPolicy }}
+          args:
+            - "--appendonly"
+            - "yes"
+          ports:
+            - containerPort: 6379
+              protocol: TCP
+          volumeMounts:
+            - name: redis-data
+              mountPath: /var/lib/redis/data
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: {{ include "lightspeed-agent.fullname" . }}-redis-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lightspeed-agent.redisServiceName" . }}
+  labels:
+    {{- include "lightspeed-agent.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ratelimit
+spec:
+  selector:
+    {{- include "lightspeed-agent.redisSelectorLabels" . | nindent 4 }}
+  ports:
+    - port: 6379
+      targetPort: 6379
+      protocol: TCP
+  type: ClusterIP

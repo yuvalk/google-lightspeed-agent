@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lightspeed-agent.fullname" . }}
+  labels:
+    {{- include "lightspeed-agent.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  replicas: {{ .Values.agent.replicas }}
+  selector:
+    matchLabels:
+      {{- include "lightspeed-agent.agentSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lightspeed-agent.agentSelectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        # ===================================================================
+        # Lightspeed Agent
+        # ===================================================================
+        - name: lightspeed-agent
+          image: {{ printf "%s:%s" .Values.agent.image.repository .Values.agent.image.tag }}
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.agent.port }}
+              protocol: TCP
+              name: http
+          envFrom:
+            - configMapRef:
+                name: {{ include "lightspeed-agent.fullname" . }}-config
+          env:
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lightspeed-agent.fullname" . }}-secrets
+                  key: GOOGLE_API_KEY
+            - name: GOOGLE_CLOUD_PROJECT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lightspeed-agent.fullname" . }}-secrets
+                  key: GOOGLE_CLOUD_PROJECT
+                  optional: true
+            - name: RED_HAT_SSO_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lightspeed-agent.fullname" . }}-secrets
+                  key: RED_HAT_SSO_CLIENT_ID
+            - name: RED_HAT_SSO_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lightspeed-agent.fullname" . }}-secrets
+                  key: RED_HAT_SSO_CLIENT_SECRET
+            - name: SESSION_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lightspeed-agent.fullname" . }}-secrets
+                  key: SESSION_DATABASE_URL
+                  optional: true
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.agent.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: {{ .Values.agent.port }}
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.agent.port }}
+            periodSeconds: 30
+            failureThreshold: 3
+
+        # ===================================================================
+        # Red Hat Lightspeed MCP Server (Sidecar)
+        # ===================================================================
+        - name: lightspeed-mcp
+          image: {{ printf "%s:%s" .Values.mcp.image.repository .Values.mcp.image.tag }}
+          imagePullPolicy: {{ .Values.mcp.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "lightspeed-agent.fullname" . }}-config
+          args:
+            - "--debug"
+            - "$(MCP_SERVER_MODE)"
+            - "--port"
+            - "$(MCP_SERVER_PORT)"
+            - "--host"
+            - "$(MCP_SERVER_HOST)"
+          ports:
+            - containerPort: {{ .Values.mcp.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.mcp.resources | nindent 12 }}

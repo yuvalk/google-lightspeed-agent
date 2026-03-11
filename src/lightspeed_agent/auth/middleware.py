@@ -109,11 +109,19 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             introspector = get_token_introspector()
             user = await introspector.validate_token(token)
 
-            order_id = await self._resolve_and_validate_order(client_id=user.client_id)
-            if not order_id:
-                return self._forbidden_response(
-                    "No active order found for this client"
+            order_id: str | None = None
+            if self._settings.skip_order_validation:
+                logger.debug(
+                    "Skipping order validation (skip_order_validation=true)"
                 )
+            else:
+                order_id = await self._resolve_and_validate_order(
+                    client_id=user.client_id
+                )
+                if not order_id:
+                    return self._forbidden_response(
+                        "No active order found for this client"
+                    )
 
             # Store user in request state for access in handlers
             request.state.user = user

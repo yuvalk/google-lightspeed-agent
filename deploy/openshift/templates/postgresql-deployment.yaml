@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lightspeed-agent.postgresqlServiceName" . }}
+  labels:
+    {{- include "lightspeed-agent.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "lightspeed-agent.postgresqlSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lightspeed-agent.postgresqlSelectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: postgresql
+          image: {{ printf "%s:%s" .Values.postgresql.image.repository .Values.postgresql.image.tag }}
+          imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
+          ports:
+            - containerPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRESQL_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "lightspeed-agent.fullname" . }}-config
+                  key: SESSION_DB_USER
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lightspeed-agent.fullname" . }}-secrets
+                  key: SESSION_DB_PASSWORD
+            - name: POSTGRESQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "lightspeed-agent.fullname" . }}-config
+                  key: SESSION_DB_NAME
+          volumeMounts:
+            - name: postgresql-data
+              mountPath: /var/lib/pgsql/data
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command:
+                - /usr/libexec/check-container
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - /usr/libexec/check-container
+                - --live
+            initialDelaySeconds: 120
+            periodSeconds: 10
+      volumes:
+        - name: postgresql-data
+          persistentVolumeClaim:
+            claimName: {{ include "lightspeed-agent.fullname" . }}-postgresql-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lightspeed-agent.postgresqlServiceName" . }}
+  labels:
+    {{- include "lightspeed-agent.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  selector:
+    {{- include "lightspeed-agent.postgresqlSelectorLabels" . | nindent 4 }}
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+  type: ClusterIP

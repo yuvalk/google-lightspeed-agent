@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "lightspeed-agent.fullname" . }}-config
+  labels:
+    {{- include "lightspeed-agent.labels" . | nindent 4 }}
+data:
+  # Google AI Configuration
+  GOOGLE_GENAI_USE_VERTEXAI: {{ .Values.google.useVertexAI | ternary "TRUE" "FALSE" | quote }}
+  GOOGLE_CLOUD_LOCATION: {{ .Values.google.cloudLocation | quote }}
+  GEMINI_MODEL: {{ .Values.google.geminiModel | quote }}
+
+  # Red Hat SSO Configuration
+  RED_HAT_SSO_ISSUER: {{ .Values.sso.issuer | quote }}
+  AGENT_REQUIRED_SCOPE: {{ .Values.sso.requiredScope | quote }}
+
+  # MCP Server Configuration (agent -> MCP sidecar)
+  MCP_TRANSPORT_MODE: {{ .Values.mcp.transport | quote }}
+  MCP_SERVER_URL: {{ printf "http://localhost:%d" (int .Values.mcp.port) | quote }}
+  MCP_READ_ONLY: {{ .Values.mcp.readOnly | quote }}
+
+  # MCP Server Configuration (container startup args)
+  MCP_SERVER_MODE: {{ .Values.mcp.transport | quote }}
+  MCP_SERVER_PORT: {{ .Values.mcp.port | quote }}
+  MCP_SERVER_HOST: {{ .Values.mcp.host | quote }}
+
+  # Agent Configuration
+  AGENT_PROVIDER_URL: {{ .Values.agent.providerUrl | quote }}
+  AGENT_NAME: {{ .Values.agent.name | quote }}
+  AGENT_DESCRIPTION: {{ .Values.agent.description | quote }}
+  AGENT_HOST: {{ .Values.agent.host | quote }}
+  AGENT_PORT: {{ .Values.agent.port | quote }}
+
+  # Session PostgreSQL Configuration
+  SESSION_DB_USER: {{ .Values.postgresql.user | quote }}
+  SESSION_DB_NAME: {{ .Values.postgresql.database | quote }}
+
+  # Rate Limiting Configuration
+  RATE_LIMIT_REDIS_URL: {{ printf "redis://%s-redis:6379/0" (include "lightspeed-agent.fullname" .) | quote }}
+  RATE_LIMIT_REDIS_TIMEOUT_MS: {{ .Values.rateLimit.redisTimeoutMs | quote }}
+  RATE_LIMIT_KEY_PREFIX: {{ .Values.rateLimit.keyPrefix | quote }}
+  RATE_LIMIT_REQUESTS_PER_MINUTE: {{ .Values.rateLimit.requestsPerMinute | quote }}
+  RATE_LIMIT_REQUESTS_PER_HOUR: {{ .Values.rateLimit.requestsPerHour | quote }}
+
+  # Google Cloud Service Control (disabled for OpenShift)
+  SERVICE_CONTROL_ENABLED: "false"
+
+  # Authentication
+  SKIP_JWT_VALIDATION: {{ .Values.auth.skipJwtValidation | quote }}
+  SKIP_ORDER_VALIDATION: {{ .Values.auth.skipOrderValidation | quote }}
+
+  # Logging
+  LOG_LEVEL: {{ .Values.logging.level | quote }}
+  LOG_FORMAT: {{ .Values.logging.format | quote }}
+
+  # OpenTelemetry
+  OTEL_ENABLED: {{ .Values.otel.enabled | quote }}
+  OTEL_SERVICE_NAME: {{ .Values.otel.serviceName | quote }}
+  OTEL_EXPORTER_TYPE: {{ .Values.otel.exporterType | quote }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.otel.otlpEndpoint | quote }}
+  OTEL_EXPORTER_OTLP_HTTP_ENDPOINT: {{ .Values.otel.otlpHttpEndpoint | quote }}
+  OTEL_TRACES_SAMPLER: {{ .Values.otel.tracesSampler | quote }}
+  OTEL_TRACES_SAMPLER_ARG: {{ .Values.otel.tracesSamplerArg | quote }}
