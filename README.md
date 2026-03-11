@@ -455,14 +455,14 @@ for i in {1..70}; do
   code=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
     -X POST http://localhost:8000/ \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"message/send","id":"'$i'","params":{"message":{"role":"user","parts":[{"type":"text","text":"test"}]}}}')
+    -d '{"jsonrpc":"2.0","method":"message/send","id":"'$i'","params":{"message":{"messageId":"'$i'","role":"user","parts":[{"type":"text","text":"test"}]}}}')
   echo "$i -> $code"
 done
 
 # Inspect 429 details and headers
 curl -i -X POST http://localhost:8000/ \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"message/send","id":"x","params":{"message":{"role":"user","parts":[{"type":"text","text":"test"}]}}}'
+  -d '{"jsonrpc":"2.0","method":"message/send","id":"x","params":{"message":{"messageId":"x","role":"user","parts":[{"type":"text","text":"test"}]}}}'
 
 # Inspect Redis rate-limit keys
 podman exec -it lightspeed-redis-redis redis-cli KEYS "lightspeed:ratelimit:*"
@@ -548,6 +548,7 @@ curl -X POST http://localhost:8000/ \
     "method": "message/send",
     "params": {
       "message": {
+        "messageId": "1",
         "role": "user",
         "parts": [{"type": "text", "text": "Show my systems"}]
       }
