@@ -3,11 +3,10 @@
 import contextvars
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.middleware.base import RequestResponseEndpoint
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse
 
 from lightspeed_agent.auth.introspection import (

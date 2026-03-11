@@ -1,8 +1,9 @@
 """Header provider for MCP toolset to inject authentication credentials."""
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from lightspeed_agent.auth.middleware import get_request_access_token
 

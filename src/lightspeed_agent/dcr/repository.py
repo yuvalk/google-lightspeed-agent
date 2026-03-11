@@ -1,7 +1,6 @@
 """Repository for DCR registered clients with PostgreSQL persistence."""
 
 import logging
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
