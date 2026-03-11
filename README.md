@@ -208,6 +208,40 @@ See `.env.example` for all available configuration options.
 | `RED_HAT_SSO_CLIENT_ID` | OAuth client ID for Red Hat SSO |
 | `RED_HAT_SSO_CLIENT_SECRET` | OAuth client secret for Red Hat SSO |
 
+### Production Mode
+
+Set `PRODUCTION=true` to enforce all production security guards at startup. The application will **fail fast** with a clear error listing every violation, so operators can fix everything at once.
+
+```bash
+PRODUCTION=true
+```
+
+When enabled, the following guards are enforced:
+
+| # | Guard | What it enforces |
+|---|-------|-----------------|
+| 1 | **Force Vertex AI** | `GOOGLE_API_KEY` must not be set, `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT` required |
+| 2 | **Force JWT validation** | `SKIP_JWT_VALIDATION` must be `false` |
+| 3 | **Disable debug** | `DEBUG` must be `false` |
+| 4 | **Force HTTPS** | `AGENT_PROVIDER_URL` and `MCP_SERVER_URL` must use `https://` |
+| 5 | **Force PostgreSQL** | `DATABASE_URL` must not use SQLite |
+| 6 | **Force MCP http transport** | `MCP_TRANSPORT_MODE` must be `http` (not `stdio`) |
+| 7 | **Force JWT forwarding** | `LIGHTSPEED_CLIENT_ID`/`SECRET` must not be set — user JWT is forwarded to MCP instead |
+| 8 | **No CORS** | CORS middleware is removed from both agent and marketplace handler |
+| 9 | **Require SSO credentials** | `RED_HAT_SSO_CLIENT_ID` and `RED_HAT_SSO_CLIENT_SECRET` must be set |
+| 10 | **Require DCR** | `DCR_ENABLED=true`, `DCR_INITIAL_ACCESS_TOKEN` and `DCR_ENCRYPTION_KEY` must be set |
+
+**Example error output** when guards are violated:
+
+```
+Production mode validation failed with 3 violation(s):
+  - Guard 1 (Vertex AI): GOOGLE_API_KEY must not be set in production. Remove it from your environment.
+  - Guard 5 (PostgreSQL): DATABASE_URL must not use SQLite in production. Use PostgreSQL (e.g., postgresql+asyncpg://user:pass@host/db).
+  - Guard 9 (SSO): RED_HAT_SSO_CLIENT_ID must be set in production. Configure your Red Hat SSO client ID.
+```
+
+Guards 1-7 and 9-10 are validated at startup via Pydantic model validators. Guard 8 (CORS) is enforced at runtime — the middleware is simply not added when `PRODUCTION=true`.
+
 ### Obtaining Credentials
 
 #### Lightspeed Service Account (for MCP Server)
