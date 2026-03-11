@@ -146,14 +146,17 @@ def create_app() -> FastAPI:
     # Add CORS middleware for A2A Inspector and other browser-based clients
     # This must be added after other middleware to be processed first
     # Middleware execution order: CORS -> Auth -> RateLimit -> Handler
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],  # Allow all origins for development
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["*"],
-    )
+    if settings.production:
+        logger.info("Production mode: CORS middleware disabled")
+    else:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],  # Allow all origins for development
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=["*"],
+        )
 
     # Include Service Control router (admin endpoints for usage reporting)
     # Provides:

@@ -42,18 +42,24 @@ def create_mcp_header_provider():
         settings = get_settings()
 
         # --- Priority 1: Lightspeed service-account credentials ---
-        if settings.lightspeed_client_id and settings.lightspeed_client_secret:
-            logger.debug("Using lightspeed credentials from environment")
-            return {
-                "lightspeed-client-id": settings.lightspeed_client_id,
-                "lightspeed-client-secret": settings.lightspeed_client_secret,
-            }
+        # Skipped in production mode (Guard 7 enforces JWT forwarding)
+        if not settings.production:
+            if settings.lightspeed_client_id and settings.lightspeed_client_secret:
+                logger.debug("Using lightspeed credentials from environment")
+                return {
+                    "lightspeed-client-id": settings.lightspeed_client_id,
+                    "lightspeed-client-secret": settings.lightspeed_client_secret,
+                }
 
         # --- Priority 2: Forward the caller's JWT token ---
         token_info = get_request_access_token()
         if token_info is not None:
             token, token_exp = token_info
             now = datetime.now(UTC)
+            if settings.production:
+                logger.info(
+                    "Production mode: forwarding user JWT to MCP server"
+                )
             if now >= token_exp:
                 logger.warning(
                     "Access token expired at %s (now %s); "
@@ -63,10 +69,16 @@ def create_mcp_header_provider():
                 )
             return {"Authorization": f"Bearer {token}"}
 
-        logger.warning(
-            "No MCP credentials available: lightspeed credentials not "
-            "configured and no access token in request context"
-        )
+        if settings.production:
+            logger.error(
+                "No MCP credentials available: production mode requires "
+                "a user JWT but no access token found in request context"
+            )
+        else:
+            logger.warning(
+                "No MCP credentials available: lightspeed credentials not "
+                "configured and no access token in request context"
+            )
         return {}
 
     return header_provider

@@ -1,10 +1,14 @@
 """Application settings and configuration management."""
 
+import logging
+import os
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -15,6 +19,12 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+    )
+
+    # Production Mode
+    production: bool = Field(
+        default=False,
+        description="Enable production mode. Enforces security guards.",
     )
 
     # Google AI / Gemini Configuration
@@ -270,6 +280,147 @@ class Settings(BaseSettings):
         default=1.0,
         description="Sampler argument (e.g., ratio for traceidratio)",
     )
+
+    @model_validator(mode="after")
+    def _block_skip_jwt_in_production(self) -> Self:
+        """Block SKIP_JWT_VALIDATION when running on Cloud Run (K_SERVICE)."""
+        if os.getenv("K_SERVICE") and self.skip_jwt_validation:
+            raise ValueError(
+                "SKIP_JWT_VALIDATION=true is not allowed when running on "
+                "Cloud Run (K_SERVICE is set). Remove SKIP_JWT_VALIDATION "
+                "or set it to false."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_production_guards(self) -> Self:
+        """Enforce all production security guards when PRODUCTION=true.
+
+        Collects all violations and raises a single error so the operator
+        can fix everything at once.
+        """
+        if not self.production:
+            return self
+
+        logger.info("Production mode enabled — enforcing security guards")
+
+        violations: list[str] = []
+
+        # Guard 1: Force Vertex AI
+        if self.google_api_key:
+            violations.append(
+                "Guard 1 (Vertex AI): GOOGLE_API_KEY must not be set in "
+                "production. Remove it from your environment."
+            )
+        if not self.google_genai_use_vertexai:
+            violations.append(
+                "Guard 1 (Vertex AI): GOOGLE_GENAI_USE_VERTEXAI must be true "
+                "in production. Set GOOGLE_GENAI_USE_VERTEXAI=true."
+            )
+        if not self.google_cloud_project:
+            violations.append(
+                "Guard 1 (Vertex AI): GOOGLE_CLOUD_PROJECT must be set in "
+                "production. Set it to your GCP project ID."
+            )
+
+        # Guard 2: Force JWT validation
+        if self.skip_jwt_validation:
+            violations.append(
+                "Guard 2 (JWT): SKIP_JWT_VALIDATION must not be true in "
+                "production. Remove it or set SKIP_JWT_VALIDATION=false."
+            )
+
+        # Guard 3: Disable debug
+        if self.debug:
+            violations.append(
+                "Guard 3 (Debug): DEBUG must not be true in production. "
+                "Remove it or set DEBUG=false."
+            )
+
+        # Guard 4: Force HTTPS on all URLs
+        if not self.agent_provider_url.startswith("https://"):
+            violations.append(
+                "Guard 4 (HTTPS): AGENT_PROVIDER_URL must start with "
+                f"https:// in production. Got: {self.agent_provider_url}"
+            )
+        if not self.mcp_server_url.startswith("https://"):
+            violations.append(
+                "Guard 4 (HTTPS): MCP_SERVER_URL must start with https:// "
+                f"in production. Got: {self.mcp_server_url}"
+            )
+
+        # Guard 5: Force PostgreSQL
+        if "sqlite" in self.database_url.lower():
+            violations.append(
+                "Guard 5 (PostgreSQL): DATABASE_URL must not use SQLite in "
+                "production. Use PostgreSQL "
+                "(e.g., postgresql+asyncpg://user:pass@host/db)."
+            )
+
+        # Guard 6: Force MCP http transport
+        if self.mcp_transport_mode != "http":
+            violations.append(
+                "Guard 6 (MCP transport): MCP_TRANSPORT_MODE must be 'http' "
+                f"in production. Got: {self.mcp_transport_mode}"
+            )
+
+        # Guard 7: Force JWT forwarding to MCP (no service-account creds)
+        if self.lightspeed_client_id:
+            violations.append(
+                "Guard 7 (JWT forwarding): LIGHTSPEED_CLIENT_ID must not be "
+                "set in production. Remove it so the user JWT is forwarded "
+                "to MCP instead."
+            )
+        if self.lightspeed_client_secret:
+            violations.append(
+                "Guard 7 (JWT forwarding): LIGHTSPEED_CLIENT_SECRET must not "
+                "be set in production. Remove it so the user JWT is forwarded "
+                "to MCP instead."
+            )
+
+        # Guard 8: No CORS middleware (enforced at runtime in app.py)
+        # — nothing to validate here; checked in create_app()
+
+        # Guard 9: Require SSO credentials
+        if not self.red_hat_sso_client_id:
+            violations.append(
+                "Guard 9 (SSO): RED_HAT_SSO_CLIENT_ID must be set in "
+                "production. Configure your Red Hat SSO client ID."
+            )
+        if not self.red_hat_sso_client_secret:
+            violations.append(
+                "Guard 9 (SSO): RED_HAT_SSO_CLIENT_SECRET must be set in "
+                "production. Configure your Red Hat SSO client secret."
+            )
+
+        # Guard 10: Require DCR configuration
+        if not self.dcr_enabled:
+            violations.append(
+                "Guard 10 (DCR): DCR_ENABLED must be true in production. "
+                "Set DCR_ENABLED=true."
+            )
+        if not self.dcr_initial_access_token:
+            violations.append(
+                "Guard 10 (DCR): DCR_INITIAL_ACCESS_TOKEN must be set in "
+                "production. Configure your Keycloak Initial Access Token."
+            )
+        if not self.dcr_encryption_key:
+            violations.append(
+                "Guard 10 (DCR): DCR_ENCRYPTION_KEY must be set in "
+                "production. Generate one with: python -c "
+                "'from cryptography.fernet import Fernet; "
+                "print(Fernet.generate_key().decode())'"
+            )
+
+        if violations:
+            header = (
+                f"Production mode validation failed with "
+                f"{len(violations)} violation(s):"
+            )
+            details = "\n  - ".join(violations)
+            raise ValueError(f"{header}\n  - {details}")
+
+        return self
 
 
 @lru_cache
