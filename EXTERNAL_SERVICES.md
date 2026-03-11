@@ -2,6 +2,23 @@
 
 A comprehensive list of all external services used by the Google Lightspeed Agent.
 
+## LLM Models
+
+The agent uses Google Gemini models for all LLM inference. Two access paths are supported:
+
+| Access Path | Description | Key Config |
+|-------------|-------------|------------|
+| **Google AI Studio** (default) | Direct API key access to Gemini | `GOOGLE_API_KEY` |
+| **Vertex AI** | Enterprise access via GCP project | `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` |
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Model used for agent responses |
+| `GOOGLE_GENAI_USE_VERTEXAI` | `false` | Switch between AI Studio and Vertex AI |
+| `GOOGLE_CLOUD_LOCATION` | `us-central1` | Region for Vertex AI |
+
+The model is configured in `src/lightspeed_agent/config/settings.py` and used via the Google Agent Development Kit (ADK) `LlmAgent` in `src/lightspeed_agent/core/agent.py`.
+
 ## Google Cloud Services
 
 | Service | Purpose | Required | Key Config |
