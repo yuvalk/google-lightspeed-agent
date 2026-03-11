@@ -54,14 +54,6 @@ class Settings(BaseSettings):
         description="OAuth client secret for Red Hat SSO",
     )
     # Red Hat Lightspeed MCP Configuration
-    lightspeed_client_id: str = Field(
-        default="",
-        description="Lightspeed service account client ID",
-    )
-    lightspeed_client_secret: str = Field(
-        default="",
-        description="Lightspeed service account client secret",
-    )
     mcp_transport_mode: Literal["stdio", "http", "sse"] = Field(
         default="stdio",
         description="MCP server transport mode",

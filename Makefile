@@ -27,8 +27,6 @@ help:
 	@echo ""
 	@echo "Required Environment Variables:"
 	@echo "  GOOGLE_API_KEY           - Google AI Studio API key"
-	@echo "  LIGHTSPEED_CLIENT_ID     - Red Hat Insights service account ID"
-	@echo "  LIGHTSPEED_CLIENT_SECRET - Red Hat Insights service account secret"
 	@echo ""
 
 # =============================================================================
@@ -122,18 +120,6 @@ check-env:
 		missing=1; \
 	else \
 		echo "  ✓ GOOGLE_API_KEY is set (or using Vertex AI)"; \
-	fi; \
-	if [ -z "$$LIGHTSPEED_CLIENT_ID" ]; then \
-		echo "  ✗ LIGHTSPEED_CLIENT_ID is not set"; \
-		missing=1; \
-	else \
-		echo "  ✓ LIGHTSPEED_CLIENT_ID is set"; \
-	fi; \
-	if [ -z "$$LIGHTSPEED_CLIENT_SECRET" ]; then \
-		echo "  ✗ LIGHTSPEED_CLIENT_SECRET is not set"; \
-		missing=1; \
-	else \
-		echo "  ✓ LIGHTSPEED_CLIENT_SECRET is set"; \
 	fi; \
 	if [ $$missing -eq 1 ]; then \
 		echo ""; \

@@ -13,7 +13,7 @@ from mcp import StdioServerParameters
 from lightspeed_agent.tools.schema_sanitizer import SanitizedMcpToolset as McpToolset
 
 from lightspeed_agent.config import get_settings
-from lightspeed_agent.tools.mcp_config import MCPServerConfig, setup_mcp_environment
+from lightspeed_agent.tools.mcp_config import MCPServerConfig
 from lightspeed_agent.tools.mcp_headers import create_mcp_header_provider
 
 if TYPE_CHECKING:
@@ -41,9 +41,6 @@ def create_insights_toolset(
     if config is None:
         config = MCPServerConfig.from_settings()
 
-    # Set up environment for MCP connection (for stdio mode)
-    setup_mcp_environment(config)
-
     # Create header provider for dynamic credential injection
     header_provider = create_mcp_header_provider() if use_dynamic_headers else None
 
@@ -68,7 +65,6 @@ def _create_stdio_toolset(
     server_params = StdioServerParameters(
         command=config.get_stdio_command(),
         args=config.get_stdio_args(),
-        env=config.get_stdio_env(),
     )
 
     connection_params = StdioConnectionParams(server_params=server_params)
@@ -95,7 +91,6 @@ def _create_sse_toolset(
     """
     connection_params = SseConnectionParams(
         url=f"{config.server_url}/sse",
-        headers=config.get_http_headers() if not header_provider else None,
     )
 
     return McpToolset(

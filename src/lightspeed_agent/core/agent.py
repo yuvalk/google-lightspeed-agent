@@ -82,9 +82,8 @@ def create_agent() -> LlmAgent:
     """Create the Lightspeed Agent with MCP tools.
 
     This function creates an LlmAgent with the Red Hat Lightspeed MCP toolset.
-    Credentials for MCP are resolved dynamically per-request using a header_provider:
-    1. First, from the user's JWT claims (lightspeed_client_id/secret)
-    2. Fallback to agent-level credentials from environment variables
+    The caller's JWT token is forwarded to the MCP server via a header_provider
+    so the MCP server can authenticate on behalf of the calling user.
 
     Returns:
         Configured LlmAgent instance.
