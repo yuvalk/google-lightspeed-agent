@@ -98,6 +98,10 @@ class EntitlementInfo(BaseModel):
         alias="cancellationReason",
         description="Reason for cancellation",
     )
+    product: str | None = Field(
+        None,
+        description="Product identifier from marketplace",
+    )
 
 
 class AccountInfo(BaseModel):

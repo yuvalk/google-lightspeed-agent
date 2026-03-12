@@ -7,17 +7,13 @@ import httpx
 
 from lightspeed_agent.config import get_settings
 from lightspeed_agent.marketplace.models import (
-    Account,
-    AccountState,
     Entitlement,
     EntitlementState,
     ProcurementEvent,
     ProcurementEventType,
 )
 from lightspeed_agent.marketplace.repository import (
-    AccountRepository,
     EntitlementRepository,
-    get_account_repository,
     get_entitlement_repository,
 )
 
@@ -28,26 +24,23 @@ class ProcurementService:
     """Service for managing marketplace procurement operations.
 
     This service handles:
-    - Processing procurement events from Pub/Sub
-    - Managing account and entitlement lifecycle
+    - Processing entitlement events from Pub/Sub (filtered by product)
+    - Managing entitlement lifecycle
     - Interacting with the Commerce Procurement API
-    - Generating OAuth credentials for orders
+    - Validating account state via Procurement API (source of truth)
     """
 
     PROCUREMENT_API_BASE = "https://cloudcommerceprocurement.googleapis.com/v1"
 
     def __init__(
         self,
-        account_repo: AccountRepository | None = None,
         entitlement_repo: EntitlementRepository | None = None,
     ) -> None:
         """Initialize the procurement service.
 
         Args:
-            account_repo: Account repository (uses default if not provided).
             entitlement_repo: Entitlement repository (uses default if not provided).
         """
-        self._account_repo = account_repo or get_account_repository()
         self._entitlement_repo = entitlement_repo or get_entitlement_repository()
         self._settings = get_settings()
 
@@ -64,12 +57,6 @@ class ProcurementService:
         )
 
         handlers = {
-            # Account events
-            ProcurementEventType.ACCOUNT_CREATION_REQUESTED: (
-                self._handle_account_creation_requested
-            ),
-            ProcurementEventType.ACCOUNT_ACTIVE: self._handle_account_active,
-            ProcurementEventType.ACCOUNT_DELETED: self._handle_account_deleted,
             # Entitlement lifecycle
             ProcurementEventType.ENTITLEMENT_CREATION_REQUESTED: (
                 self._handle_entitlement_creation_requested
@@ -107,82 +94,6 @@ class ProcurementService:
         else:
             logger.warning("No handler for event type: %s", event.event_type)
 
-    # Account event handlers
-
-    async def _handle_account_creation_requested(
-        self, event: ProcurementEvent
-    ) -> None:
-        """Handle ACCOUNT_CREATION_REQUESTED event.
-
-        Per the reference implementation, this event triggers:
-        1. Create account record in PENDING state
-        2. Approve the account via Procurement API
-        3. Account becomes ACTIVE after approval
-
-        This must complete before DCR can return credentials for orders
-        associated with this account.
-        """
-        if not event.account:
-            logger.error("ACCOUNT_CREATION_REQUESTED missing account info")
-            return
-
-        # Create account in pending state
-        account = await self._account_repo.get(event.account.id)
-        if not account:
-            account = Account(
-                id=event.account.id,
-                state=AccountState.PENDING,
-                provider_id=event.provider_id,
-            )
-            await self._account_repo.create(account)
-
-        # Approve the account via Procurement API
-        approved = await self._approve_account(event.account.id)
-        if approved:
-            account.state = AccountState.ACTIVE
-            await self._account_repo.update(account)
-            logger.info(
-                "Account creation requested and approved: %s",
-                event.account.id,
-            )
-        else:
-            logger.warning(
-                "Account created but approval failed: %s (will retry on ACCOUNT_ACTIVE)",
-                event.account.id,
-            )
-
-    async def _handle_account_active(self, event: ProcurementEvent) -> None:
-        """Handle ACCOUNT_ACTIVE event."""
-        if not event.account:
-            logger.error("ACCOUNT_ACTIVE event missing account info")
-            return
-
-        account = await self._account_repo.get(event.account.id)
-        if account:
-            account.state = AccountState.ACTIVE
-            await self._account_repo.update(account)
-        else:
-            account = Account(
-                id=event.account.id,
-                state=AccountState.ACTIVE,
-                provider_id=event.provider_id,
-            )
-            await self._account_repo.create(account)
-
-        logger.info("Account activated: %s", event.account.id)
-
-    async def _handle_account_deleted(self, event: ProcurementEvent) -> None:
-        """Handle ACCOUNT_DELETED event."""
-        if not event.account:
-            logger.error("ACCOUNT_DELETED event missing account info")
-            return
-
-        account = await self._account_repo.get(event.account.id)
-        if account:
-            account.state = AccountState.DELETED
-            await self._account_repo.update(account)
-            logger.info("Account marked as deleted: %s", event.account.id)
-
     # Entitlement lifecycle handlers
 
     async def _handle_entitlement_creation_requested(
@@ -197,12 +108,16 @@ class ProcurementService:
             return
 
         # Create entitlement record
+        metadata = {}
+        if event.entitlement.product:
+            metadata["product_id"] = event.entitlement.product
         entitlement = Entitlement(
             id=event.entitlement.id,
             account_id="",  # Will be set when we fetch from API
             state=EntitlementState.PENDING_APPROVAL,
             plan=event.entitlement.new_plan,
             provider_id=event.provider_id,
+            metadata=metadata,
         )
         await self._entitlement_repo.create(entitlement)
 
@@ -223,9 +138,15 @@ class ProcurementService:
             logger.error("ENTITLEMENT_ACTIVE missing entitlement info")
             return
 
+        metadata = {}
+        if event.entitlement.product:
+            metadata["product_id"] = event.entitlement.product
+
         entitlement = await self._entitlement_repo.get(event.entitlement.id)
         if entitlement:
             entitlement.state = EntitlementState.ACTIVE
+            if metadata:
+                entitlement.metadata = {**entitlement.metadata, **metadata}
             await self._entitlement_repo.update(entitlement)
         else:
             # Create if not exists (could happen if we missed creation event)
@@ -234,6 +155,7 @@ class ProcurementService:
                 account_id="",
                 state=EntitlementState.ACTIVE,
                 provider_id=event.provider_id,
+                metadata=metadata,
             )
             await self._entitlement_repo.create(entitlement)
 
@@ -458,51 +380,52 @@ class ProcurementService:
             logger.error("Error approving entitlement %s: %s", entitlement_id, e)
             return False
 
-    async def _approve_account(self, account_id: str) -> bool:
-        """Approve an account via the Procurement API.
+    async def _get_account_state(self, account_id: str) -> str | None:
+        """Get account state from the Procurement API.
 
-        Per the reference implementation, accounts must be approved before
-        DCR can return credentials.
+        Queries the source of truth instead of relying on local DB state
+        populated by Pub/Sub events.
 
         Args:
-            account_id: The Procurement Account ID to approve.
+            account_id: The Procurement Account ID.
 
         Returns:
-            True if approved, False otherwise.
+            Account state string (e.g., "ACCOUNT_ACTIVE") or None on error.
         """
         try:
             if not self._settings.service_control_service_name:
-                logger.warning("SERVICE_CONTROL_SERVICE_NAME not set, skipping approval")
-                return True  # Allow for development
+                logger.warning("SERVICE_CONTROL_SERVICE_NAME not set, skipping account check")
+                return "ACCOUNT_ACTIVE"  # Allow for development
 
             svc = self._settings.service_control_service_name
             url = (
                 f"{self.PROCUREMENT_API_BASE}/providers/{svc}"
-                f"/accounts/{account_id}:approve"
+                f"/accounts/{account_id}"
             )
             headers = await self._get_auth_headers()
 
             async with httpx.AsyncClient() as client:
-                response = await client.post(
+                response = await client.get(
                     url,
-                    json={},
                     headers=headers,
                     timeout=30.0,
                 )
 
                 if response.status_code == 200:
-                    logger.info("Approved account: %s", account_id)
-                    return True
+                    data = response.json()
+                    state = data.get("state", "")
+                    logger.info("Account %s state: %s", account_id, state)
+                    return state
                 else:
                     logger.error(
-                        "Failed to approve account %s: %s",
+                        "Failed to get account %s: %s",
                         account_id,
                         response.text,
                     )
-                    return False
+                    return None
         except Exception as e:
-            logger.error("Error approving account %s: %s", account_id, e)
-            return False
+            logger.error("Error getting account %s: %s", account_id, e)
+            return None
 
     async def _approve_plan_change(
         self,
@@ -561,13 +484,19 @@ class ProcurementService:
     async def is_valid_account(self, account_id: str) -> bool:
         """Check if an account ID is valid for DCR.
 
+        Queries the Procurement API directly instead of relying on local DB
+        state. This is the source of truth for account state and works
+        correctly in multi-agent deployments where account Pub/Sub events
+        are not processed locally.
+
         Args:
             account_id: The Procurement Account ID.
 
         Returns:
-            True if valid, False otherwise.
+            True if the account is active, False otherwise.
         """
-        return await self._account_repo.is_valid(account_id)
+        state = await self._get_account_state(account_id)
+        return state == "ACCOUNT_ACTIVE"
 
     async def is_valid_order(self, order_id: str) -> bool:
         """Check if an order ID is valid for DCR.

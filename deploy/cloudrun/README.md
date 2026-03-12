@@ -21,7 +21,7 @@ The deployment consists of **two separate Cloud Run services** plus **Cloud Memo
 │                    Marketplace Handler Service (Port 8001)                      │
 │                    ───────────────────────────────────────                      │
 │  - Always running (minScale=1) to receive Pub/Sub events                        │
-│  - Handles account/entitlement approvals via Procurement API                    │
+│  - Handles entitlement approvals via Procurement API (filtered by product)      │
 │  - Handles DCR requests (creates OAuth clients in Red Hat SSO)                  │
 │  - Stores data in PostgreSQL                                                    │
 └──────────┬──────────────────────────────────────────────────────────────────────┘

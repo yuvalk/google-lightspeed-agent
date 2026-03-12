@@ -100,7 +100,7 @@ The system is split into two services for important operational reasons:
 | **Marketplace Handler** | Handles provisioning and DCR | Always running (minScale=1) |
 | **Lightspeed Agent** | AI agent for user queries | Deployed after provisioning |
 
-1. **Marketplace Handler must be always running** to receive Pub/Sub events from Google Cloud Marketplace for account approvals
+1. **Marketplace Handler must be always running** to receive Pub/Sub events from Google Cloud Marketplace for entitlement approvals
 2. **Agent can be deployed on-demand** after a customer has been provisioned
 3. **Separation of concerns**: Provisioning logic is isolated from agent logic
 4. **Independent scaling**: Handler scales for provisioning traffic, Agent scales for user traffic
@@ -112,7 +112,7 @@ The system is split into two services for important operational reasons:
 A separate FastAPI application for provisioning, providing:
 
 - **Hybrid /dcr Endpoint**: Single endpoint handling both:
-  - Pub/Sub events (account/entitlement approvals)
+  - Pub/Sub events (entitlement approvals, filtered by product)
   - DCR requests (OAuth client creation)
 - **Health Endpoints**: Kubernetes-compatible health checks
 - **Database Access**: PostgreSQL for persistent storage
@@ -159,10 +159,11 @@ This flow happens when a customer purchases from Google Cloud Marketplace:
 1. Customer purchases from Google Cloud Marketplace
 2. Marketplace sends Pub/Sub event to Marketplace Handler
 3. Handler receives POST /dcr with Pub/Sub message wrapper
-4. Handler extracts event type (ACCOUNT_ACTIVE, ENTITLEMENT_ACTIVE, etc.)
-5. Handler calls Google Procurement API to approve account/entitlement
-6. Handler stores account/entitlement in PostgreSQL
-7. Customer is now provisioned for the service
+4. Handler filters by product (SERVICE_CONTROL_SERVICE_NAME) — account events skipped
+5. Handler extracts event type (ENTITLEMENT_CREATION_REQUESTED, ENTITLEMENT_ACTIVE, etc.)
+6. Handler calls Google Procurement API to approve entitlement
+7. Handler stores entitlement in PostgreSQL
+8. Customer is now provisioned for the service
 ```
 
 ```

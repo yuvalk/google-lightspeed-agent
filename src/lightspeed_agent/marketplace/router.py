@@ -39,8 +39,9 @@ async def hybrid_dcr_handler(request: Request) -> JSONResponse:
 
     2. **Pub/Sub Event** (from Google Cloud Marketplace):
        - Contains `message` with base64-encoded data
-       - Processes procurement events (account/entitlement creation)
-       - Approves via Procurement API
+       - Filters events by product (SERVICE_CONTROL_SERVICE_NAME)
+       - Skips account-only events (account validation via Procurement API)
+       - Processes matching entitlement events
        - Asynchronous flow
 
     Returns:
@@ -142,6 +143,35 @@ async def _handle_pubsub_event(body: dict[str, Any]) -> JSONResponse:
     event_type_str = data.get("eventType", "")
     logger.info("Marketplace event type: %s", event_type_str)
 
+    # Product-level filtering: in multi-agent deployments, a single Pub/Sub
+    # topic is shared across all agents in the same project. Filter events
+    # by product to ensure each agent only processes its own entitlements.
+    settings = get_settings()
+    product = data.get("entitlement", {}).get("product")
+
+    if not product:
+        # Account-only events have no product field. Account validation is
+        # handled via the Procurement API during DCR, not via local DB state.
+        logger.info(
+            "Skipping event without product field: %s (%s)", message_id, event_type_str
+        )
+        return JSONResponse(
+            content={"status": "ok", "message": "Account-only event, skipping"}
+        )
+
+    if settings.service_control_service_name:
+        # Strip the "products/" prefix if present
+        product_id = product.removeprefix("products/")
+        if product_id != settings.service_control_service_name:
+            logger.info(
+                "Skipping event for different product: %s (expected %s)",
+                product_id,
+                settings.service_control_service_name,
+            )
+            return JSONResponse(
+                content={"status": "ok", "message": "Event not for this product"}
+            )
+
     # Try to parse as a known event type
     try:
         event_type = ProcurementEventType(event_type_str)
@@ -159,8 +189,9 @@ async def _handle_pubsub_event(body: dict[str, Any]) -> JSONResponse:
     procurement_service = get_procurement_service()
     await procurement_service.process_event(event)
 
+    order_id = event.entitlement.id if event.entitlement else None
     logger.info("Processed marketplace event: %s (%s)", message_id, event_type_str)
-    return JSONResponse(content={"status": "ok", "event_type": event_type_str})
+    return JSONResponse(content={"status": "success", "orderId": order_id})
 
 
 def _build_procurement_event(
@@ -221,6 +252,7 @@ def _build_procurement_event(
             id=entitlement_id,
             new_plan=entitlement_data.get("newPlan") or entitlement_data.get("plan"),
             previous_plan=entitlement_data.get("previousPlan"),
+            product=entitlement_data.get("product"),
             new_offer_start_time=entitlement_data.get("newOfferStartTime"),
             new_offer_end_time=entitlement_data.get("newOfferEndTime"),
             cancellation_reason=entitlement_data.get("cancellationReason"),

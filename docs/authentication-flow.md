@@ -36,6 +36,7 @@ Customer Admin                Google Cloud Marketplace                 Agent (Ma
      |                                  |                                          |   (Procurement API)
      |                                  |                                          |
      |                                  |-- Pub/Sub: ENTITLEMENT_CREATION_REQ ---->|
+     |                                  |                                          |-- Filter by product
      |                                  |                                          |-- Auto-approve
      |                                  |                                          |   entitlement
      |                                  |                                          |
@@ -51,9 +52,9 @@ Customer Admin                Google Cloud Marketplace                 Agent (Ma
 1. The customer admin clicks "Subscribe" on the agent's Marketplace listing.
 2. Google Cloud Marketplace emits a series of Pub/Sub events to the agent's
    marketplace handler service.
-3. The handler processes each event:
-   - `ACCOUNT_CREATION_REQUESTED` — creates and approves the marketplace account
-     via the Commerce Procurement API.
+3. The handler filters events by product (using `SERVICE_CONTROL_SERVICE_NAME`).
+   Account-only events are skipped — account validation is done via the
+   Procurement API during DCR (Step 2). For matching entitlement events:
    - `ENTITLEMENT_CREATION_REQUESTED` — creates and auto-approves the
      entitlement (order).
    - `ENTITLEMENT_ACTIVE` — marks the entitlement as active.

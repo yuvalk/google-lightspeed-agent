@@ -114,10 +114,10 @@ Marketplace sends procurement events via Pub/Sub:
 
 | Event | Description |
 |-------|-------------|
-| `ACCOUNT_CREATION_REQUESTED` | New customer account |
-| `ACCOUNT_ACTIVE` | Account approved and active |
-| `ACCOUNT_DELETED` | Account deleted |
-| `ENTITLEMENT_CREATION_REQUESTED` | New subscription request |
+| `ACCOUNT_CREATION_REQUESTED` | New customer account (skipped — account validated via Procurement API during DCR) |
+| `ACCOUNT_ACTIVE` | Account approved and active (skipped) |
+| `ACCOUNT_DELETED` | Account deleted (skipped) |
+| `ENTITLEMENT_CREATION_REQUESTED` | New subscription request (filtered by product) |
 | `ENTITLEMENT_ACTIVE` | Subscription activated |
 | `ENTITLEMENT_RENEWED` | Subscription renewed |
 | `ENTITLEMENT_OFFER_ACCEPTED` | Offer auto-accepted |
@@ -148,6 +148,14 @@ Marketplace sends procurement events via Pub/Sub:
   }
 }
 ```
+
+### Multi-Agent Product Filtering
+
+In multi-agent deployments where multiple agents share the same Google Cloud
+project and Pub/Sub topic, events are filtered by the `product` field in the
+entitlement data. Each agent only processes events matching its
+`SERVICE_CONTROL_SERVICE_NAME`. Account-only events (no product field) are
+skipped — account validation is performed via the Procurement API during DCR.
 
 ### Handling Entitlements
 

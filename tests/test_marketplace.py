@@ -1,5 +1,7 @@
 """Tests for Marketplace Procurement integration."""
 
+from unittest.mock import patch
+
 import pytest
 
 from lightspeed_agent.marketplace.models import (
@@ -7,6 +9,7 @@ from lightspeed_agent.marketplace.models import (
     AccountState,
     Entitlement,
     EntitlementState,
+    EntitlementInfo,
     ProcurementEvent,
     ProcurementEventType,
 )
@@ -67,6 +70,21 @@ class TestModels:
 
         for event_type in event_types:
             assert ProcurementEventType(event_type) is not None
+
+    def test_entitlement_info_with_product(self):
+        """Test EntitlementInfo includes product field."""
+        info = EntitlementInfo(
+            id="order-123",
+            product="products/my-agent.endpoints.project.cloud.goog",
+        )
+
+        assert info.product == "products/my-agent.endpoints.project.cloud.goog"
+
+    def test_entitlement_info_without_product(self):
+        """Test EntitlementInfo product defaults to None."""
+        info = EntitlementInfo(id="order-123")
+
+        assert info.product is None
 
 
 class TestAccountRepository:
@@ -168,23 +186,8 @@ class TestProcurementService:
     def service(self, db_session):
         """Create a fresh service."""
         return ProcurementService(
-            account_repo=AccountRepository(),
             entitlement_repo=EntitlementRepository(),
         )
-
-    @pytest.mark.asyncio
-    async def test_process_account_active(self, service):
-        """Test processing ACCOUNT_ACTIVE event."""
-        event = ProcurementEvent(
-            event_id="event-123",
-            event_type=ProcurementEventType.ACCOUNT_ACTIVE,
-            provider_id="provider-123",
-            account={"id": "account-456"},
-        )
-
-        await service.process_event(event)
-
-        assert await service.is_valid_account("account-456")
 
     @pytest.mark.asyncio
     async def test_process_entitlement_active(self, service):
@@ -200,3 +203,43 @@ class TestProcurementService:
 
         assert await service.is_valid_order("order-456")
 
+    @pytest.mark.asyncio
+    async def test_is_valid_account_active(self, service):
+        """Test is_valid_account returns True for active accounts via Procurement API."""
+        with patch.object(
+            service, "_get_account_state", return_value="ACCOUNT_ACTIVE"
+        ):
+            result = await service.is_valid_account("account-123")
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_is_valid_account_not_active(self, service):
+        """Test is_valid_account returns False for non-active accounts."""
+        with patch.object(
+            service, "_get_account_state", return_value="ACCOUNT_SUSPENDED"
+        ):
+            result = await service.is_valid_account("account-123")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_is_valid_account_api_error(self, service):
+        """Test is_valid_account returns False on API error."""
+        with patch.object(service, "_get_account_state", return_value=None):
+            result = await service.is_valid_account("account-123")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_account_events_not_handled(self, service):
+        """Test that account events are not in the handler dispatch."""
+        event = ProcurementEvent(
+            event_id="event-123",
+            event_type=ProcurementEventType.ACCOUNT_ACTIVE,
+            provider_id="provider-123",
+            account={"id": "account-456"},
+        )
+
+        # Should not raise — just logs a warning about no handler
+        await service.process_event(event)
