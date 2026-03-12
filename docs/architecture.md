@@ -29,7 +29,7 @@ The system consists of **two separate services**:
 │  │                           FastAPI Application                             │  │
 │  │  ┌──────────────────────────────────────────────────────────────────────┐ │  │
 │  │  │                    Hybrid /dcr Endpoint                              │ │  │
-│  │  │  - Pub/Sub Events → Approve entitlements (accounts skipped)           │ │  │
+│  │  │  - Pub/Sub Events → Approve accounts and entitlements                 │ │  │
 │  │  │  - DCR Requests → Create OAuth clients via Keycloak                  │ │  │
 │  │  └──────────────────────────────────────────────────────────────────────┘ │  │
 │  └───────────────────────────────────────────────────────────────────────────┘  │
@@ -159,9 +159,9 @@ This flow happens when a customer purchases from Google Cloud Marketplace:
 1. Customer purchases from Google Cloud Marketplace
 2. Marketplace sends Pub/Sub event to Marketplace Handler
 3. Handler receives POST /dcr with Pub/Sub message wrapper
-4. Handler filters by product (SERVICE_CONTROL_SERVICE_NAME) — account events skipped
-5. Handler extracts event type (ENTITLEMENT_CREATION_REQUESTED, ENTITLEMENT_ACTIVE, etc.)
-6. Handler calls Google Procurement API to approve entitlement
+4. Handler filters by product (SERVICE_CONTROL_SERVICE_NAME) — account events pass through
+5. Handler extracts event type (ACCOUNT_CREATION_REQUESTED, ENTITLEMENT_CREATION_REQUESTED, etc.)
+6. Handler calls Google Procurement API to approve account, then entitlement
 7. Handler stores entitlement in PostgreSQL
 8. Customer is now provisioned for the service
 ```

@@ -53,10 +53,11 @@ Customer Admin                Google Cloud Marketplace                 Agent (Ma
 2. Google Cloud Marketplace emits a series of Pub/Sub events to the agent's
    marketplace handler service.
 3. The handler filters events by product (using `SERVICE_CONTROL_SERVICE_NAME`).
-   Account-only events are skipped — account validation is done via the
-   Procurement API during DCR (Step 2). For matching entitlement events:
-   - `ENTITLEMENT_CREATION_REQUESTED` — creates and auto-approves the
-     entitlement (order).
+   Account events pass through without filtering. For matching events:
+   - `ACCOUNT_CREATION_REQUESTED` — auto-approves the account via Procurement API.
+   - `ENTITLEMENT_CREATION_REQUESTED` — resolves the account ID (from the
+     Procurement API if missing in the event), approves the account, then
+     auto-approves the entitlement (order).
    - `ENTITLEMENT_ACTIVE` — marks the entitlement as active.
 4. The result is an **`order_id`** (entitlement ID) in `ACTIVE` state, stored in
    the agent's database. This `order_id` is the key that links all subsequent
@@ -68,7 +69,7 @@ Customer Admin                Google Cloud Marketplace                 Agent (Ma
 |---|---|
 | Invalid JSON in Pub/Sub message body | Handler returns `400 Invalid JSON body` |
 | Pub/Sub message data is not valid base64 or UTF-8 JSON | Handler returns `400 Invalid message encoding` |
-| Event has no `product` field (account-only event) | Handler returns `200` with `"Account-only event, skipping"` (acknowledged; account validation is done via the Procurement API during DCR) |
+| Event has no `product` field (account event) | Handler processes the event normally (e.g. account approval); product filtering only applies to entitlement events |
 | Event `product` does not match `SERVICE_CONTROL_SERVICE_NAME` | Handler returns `200` with `"Event not for this product"` (acknowledged; event belongs to a different agent) |
 | Unknown event type (not a recognised `ProcurementEventType`) | Handler returns `200` with `"Unknown event: {type}"` (acknowledged so Pub/Sub does not retry) |
 | Missing required fields in event payload | Handler returns `200` with `"Invalid event data"` (acknowledged) |

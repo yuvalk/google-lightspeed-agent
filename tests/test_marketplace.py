@@ -9,8 +9,8 @@ from lightspeed_agent.marketplace.models import (
     Account,
     AccountState,
     Entitlement,
-    EntitlementState,
     EntitlementInfo,
+    EntitlementState,
     ProcurementEvent,
     ProcurementEventType,
 )
@@ -233,8 +233,8 @@ class TestProcurementService:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_account_events_not_handled(self, service):
-        """Test that account events are not in the handler dispatch."""
+    async def test_account_events_handled_gracefully(self, service):
+        """Test that account events are processed without errors."""
         event = ProcurementEvent(
             event_id="event-123",
             event_type=ProcurementEventType.ACCOUNT_ACTIVE,
@@ -242,7 +242,7 @@ class TestProcurementService:
             account={"id": "account-456"},
         )
 
-        # Should not raise — just logs a warning about no handler
+        # Should not raise — account events are handled (logged)
         await service.process_event(event)
 
     @pytest.mark.asyncio
@@ -253,9 +253,11 @@ class TestProcurementService:
             text="Forbidden",
             request=httpx.Request("POST", "https://example.com"),
         )
-        with patch.object(service, "_settings") as mock_settings, \
-             patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response):
-            mock_settings.service_control_service_name = "test-service"
+        with (
+            patch.object(service, "_settings") as mock_settings,
+            patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response),
+        ):
+            mock_settings.google_cloud_project = "test-project"
 
             with pytest.raises(RuntimeError, match="Failed to approve entitlement"):
                 await service._approve_entitlement("entitlement-123")
@@ -263,9 +265,12 @@ class TestProcurementService:
     @pytest.mark.asyncio
     async def test_approve_entitlement_raises_on_network_error(self, service):
         """Test _approve_entitlement raises on network errors."""
-        with patch.object(service, "_settings") as mock_settings, \
-             patch("httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=httpx.ConnectError("connection refused")):
-            mock_settings.service_control_service_name = "test-service"
+        error = httpx.ConnectError("connection refused")
+        with (
+            patch.object(service, "_settings") as mock_settings,
+            patch("httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=error),
+        ):
+            mock_settings.google_cloud_project = "test-project"
 
             with pytest.raises(httpx.ConnectError):
                 await service._approve_entitlement("entitlement-123")
@@ -278,9 +283,11 @@ class TestProcurementService:
             text="Internal Server Error",
             request=httpx.Request("POST", "https://example.com"),
         )
-        with patch.object(service, "_settings") as mock_settings, \
-             patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response):
-            mock_settings.service_control_service_name = "test-service"
+        with (
+            patch.object(service, "_settings") as mock_settings,
+            patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response),
+        ):
+            mock_settings.google_cloud_project = "test-project"
 
             with pytest.raises(RuntimeError, match="Failed to approve plan change"):
                 await service._approve_plan_change("entitlement-123", "new-plan")
@@ -304,6 +311,8 @@ class TestProcurementService:
             entitlement={"id": "order-existing", "newPlan": "basic"},
         )
 
-        # Approval skipped in dev mode (no SERVICE_CONTROL_SERVICE_NAME).
+        # Mock out google_cloud_project so Procurement API calls are skipped.
         # The key assertion is that it doesn't raise a duplicate-key error.
-        await service.process_event(event)
+        with patch.object(service, "_settings") as mock_settings:
+            mock_settings.google_cloud_project = None
+            await service.process_event(event)

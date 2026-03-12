@@ -70,7 +70,7 @@ The deployment uses **two separate service accounts** following the principle of
 
 | Service Account | Name | Purpose | Permissions |
 |-----------------|------|---------|-------------|
-| **Runtime SA** | `lightspeed-agent` | Cloud Run service identity for both services | Secret Manager access, Vertex AI, Pub/Sub, Cloud SQL, logging, monitoring |
+| **Runtime SA** | `lightspeed-agent` | Cloud Run service identity for both services | Secret Manager access, Vertex AI, Pub/Sub, Cloud SQL, Service Usage, logging, monitoring |
 | **Pub/Sub Invoker SA** | `pubsub-invoker` | Authenticates Pub/Sub push subscriptions to invoke Cloud Run | `roles/run.invoker` on marketplace-handler service only |
 
 **Why two service accounts?**
@@ -1823,7 +1823,7 @@ You can find your managed service name via:
 gcloud endpoints services list --project=$GOOGLE_CLOUD_PROJECT
 ```
 
-**"Skipping account-only event"** or no events at all — The Pub/Sub
+**No events arriving at all** — The Pub/Sub
 subscription is likely pointing to the wrong topic. This happens when
 `PUBSUB_TOPIC` was not set to the fully-qualified marketplace topic before
 deploying. See [Set Environment Variables](#1-set-environment-variables).

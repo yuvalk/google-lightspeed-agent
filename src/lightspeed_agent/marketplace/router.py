@@ -40,8 +40,7 @@ async def hybrid_dcr_handler(request: Request) -> JSONResponse:
     2. **Pub/Sub Event** (from Google Cloud Marketplace):
        - Contains `message` with base64-encoded data
        - Filters events by product (SERVICE_CONTROL_SERVICE_NAME)
-       - Skips account-only events (account validation via Procurement API)
-       - Processes matching entitlement events
+       - Processes account and entitlement events
        - Asynchronous flow
 
     Returns:

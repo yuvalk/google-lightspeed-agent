@@ -31,7 +31,7 @@ The system uses a **two-service architecture** to handle marketplace integration
 │                    ─────────────────────────────────                        │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │                    Hybrid /dcr Endpoint                             │    │
-│  │  - Pub/Sub Events → Approve entitlements (accounts skipped)          │    │
+│  │  - Pub/Sub Events → Approve accounts and entitlements               │    │
 │  │  - DCR Requests → Validate order, create OAuth clients via Keycloak │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                              │                                              │
@@ -78,7 +78,7 @@ DCR allows Marketplace customers to automatically register as OAuth clients. The
 
 | Request Type | Content | Handler Action |
 |-------------|---------|----------------|
-| Pub/Sub Event | `{"message": {"data": "..."}}` | Approve entitlement (account events skipped) |
+| Pub/Sub Event | `{"message": {"data": "..."}}` | Approve account and entitlement |
 | DCR Request | `{"software_statement": "..."}` | Create OAuth client |
 
 ### AgentCard DCR Extension
@@ -114,9 +114,9 @@ Marketplace sends procurement events via Pub/Sub:
 
 | Event | Description |
 |-------|-------------|
-| `ACCOUNT_CREATION_REQUESTED` | New customer account (skipped — account validated via Procurement API during DCR) |
-| `ACCOUNT_ACTIVE` | Account approved and active (skipped) |
-| `ACCOUNT_DELETED` | Account deleted (skipped) |
+| `ACCOUNT_CREATION_REQUESTED` | New customer account — auto-approved via Procurement API |
+| `ACCOUNT_ACTIVE` | Account approved and active |
+| `ACCOUNT_DELETED` | Account deleted |
 | `ENTITLEMENT_CREATION_REQUESTED` | New subscription request (filtered by product) |
 | `ENTITLEMENT_ACTIVE` | Subscription activated |
 | `ENTITLEMENT_RENEWED` | Subscription renewed |
@@ -154,8 +154,8 @@ Marketplace sends procurement events via Pub/Sub:
 In multi-agent deployments where multiple agents share the same Google Cloud
 project and Pub/Sub topic, events are filtered by the `product` field in the
 entitlement data. Each agent only processes events matching its
-`SERVICE_CONTROL_SERVICE_NAME`. Account-only events (no product field) are
-skipped — account validation is performed via the Procurement API during DCR.
+`SERVICE_CONTROL_SERVICE_NAME`. Account-only events (no product field) pass
+through without filtering and are handled normally (e.g. account approval).
 
 ### Handling Entitlements
 

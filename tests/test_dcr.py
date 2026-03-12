@@ -363,8 +363,8 @@ class TestPubSubHandler:
         assert data["orderId"] == "order-abc-123"
 
     @pytest.mark.asyncio
-    async def test_account_only_event_skipped(self, client):
-        """Test that account-only events are skipped (no product field)."""
+    async def test_account_creation_event_processed(self, client):
+        """Test that account creation events are processed (not skipped)."""
         event_data = {
             "eventType": "ACCOUNT_CREATION_REQUESTED",
             "eventId": "evt-002",
@@ -376,8 +376,8 @@ class TestPubSubHandler:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "ok"
-        assert "Account-only event" in data["message"]
+        assert data["status"] == "success"
+        assert data["orderId"] is None
 
     @pytest.mark.asyncio
     async def test_entitlement_creation_requested_returns_order_id(self, client):
@@ -432,8 +432,8 @@ class TestPubSubHandler:
         assert data["status"] == "ok"
 
     @pytest.mark.asyncio
-    async def test_unknown_event_type_no_product_skipped(self, client):
-        """Test that unknown event types without product are skipped."""
+    async def test_unknown_event_type_no_product(self, client):
+        """Test that unknown event types without product return unknown event."""
         event_data = {
             "eventType": "SOME_UNKNOWN_EVENT",
             "eventId": "evt-unknown",
@@ -445,7 +445,7 @@ class TestPubSubHandler:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "ok"
-        assert "Account-only event" in data["message"]
+        assert "Unknown event" in data["message"]
 
     @pytest.mark.asyncio
     async def test_invalid_message_encoding(self, client):

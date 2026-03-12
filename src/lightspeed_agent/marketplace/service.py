@@ -427,7 +427,7 @@ class ProcurementService:
                 # account field is "providers/{provider}/accounts/{id}"
                 account_ref = data.get("account", "")
                 if "/accounts/" in account_ref:
-                    account_id = account_ref.rsplit("/accounts/", 1)[1]
+                    account_id = str(account_ref.rsplit("/accounts/", 1)[1])
                     logger.info(
                         "Resolved account %s for entitlement %s via API",
                         account_id,
@@ -594,7 +594,7 @@ class ProcurementService:
 
                 if response.status_code == 200:
                     data = response.json()
-                    state = data.get("state", "")
+                    state = str(data.get("state", ""))
                     logger.info("Account %s state: %s", account_id, state)
                     return state
                 else:
