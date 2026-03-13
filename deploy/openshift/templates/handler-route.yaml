@@ -1,0 +1,20 @@
+{{- if and .Values.handler.enabled .Values.handler.route.enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "lightspeed-agent.handlerServiceName" . }}
+  labels:
+    {{- include "lightspeed-agent.labels" . | nindent 4 }}
+    app.kubernetes.io/component: handler
+spec:
+  to:
+    kind: Service
+    name: {{ include "lightspeed-agent.handlerServiceName" . }}
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: {{ .Values.route.tls.termination }}
+    insecureEdgeTerminationPolicy: {{ .Values.route.tls.insecureEdgeTerminationPolicy }}
+  wildcardPolicy: None
+{{- end }}

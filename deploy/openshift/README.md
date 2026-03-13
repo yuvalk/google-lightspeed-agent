@@ -2,41 +2,83 @@
 
 This guide covers deploying the Red Hat Lightspeed Agent on OpenShift using Helm.
 
-Unlike the Cloud Run and Podman deployments, the OpenShift deployment does **not**
-include the Google Cloud Marketplace handler. Order-id validation is skipped
+By default, the OpenShift deployment does **not** include the Google Cloud
+Marketplace handler. Order-id validation is skipped
 (`SKIP_ORDER_VALIDATION=true`), while JWT token introspection against Red Hat SSO
 is still enforced.
 
+For OpenShift clusters running **inside Google Cloud**, you can optionally enable
+the marketplace handler to support the full Gemini Enterprise integration flow
+(Pub/Sub events, Procurement API approvals, and DCR). See
+[Marketplace Handler (optional)](#marketplace-handler-optional) below.
+
 ## Architecture
 
+### Default (without marketplace handler)
+
 ```
-                        ┌─────────────────────────────────┐
-                        │         OpenShift Route          │
-                        │    (TLS edge termination)        │
-                        └──────────────┬──────────────────┘
-                                       │
-                        ┌──────────────▼──────────────────┐
-                        │      lightspeed-agent (Pod)      │
-                        │                                  │
-                        │  ┌─────────────────────────┐    │
-                        │  │   lightspeed-agent       │    │
-                        │  │   (port 8000)            │──────────▶ console.redhat.com
-                        │  │   A2A / JSON-RPC 2.0     │    │       (via MCP)
-                        │  │   OAuth 2.0 (Red Hat SSO)│    │
-                        │  └────────┬────────────────┘    │
-                        │           │ localhost:8081       │
-                        │  ┌────────▼────────────────┐    │
-                        │  │   lightspeed-mcp         │    │
-                        │  │   (sidecar)              │    │
-                        │  │   Red Hat Lightspeed MCP  │    │
-                        │  └──────────────────────────┘    │
-                        └──────────────────────────────────┘
-                             │                    │
-              ┌──────────────▼───┐    ┌──────────▼──────────┐
-              │  PostgreSQL      │    │  Redis               │
-              │  (sessions)      │    │  (rate limiting)     │
-              │  Port 5432       │    │  Port 6379           │
-              └──────────────────┘    └─────────────────────┘
+                        +----------------------------------+
+                        |         OpenShift Route           |
+                        |    (TLS edge termination)         |
+                        +---------------+------------------+
+                                        |
+                        +---------------v------------------+
+                        |      lightspeed-agent (Pod)       |
+                        |                                   |
+                        |  +---------------------------+    |
+                        |  |   lightspeed-agent        |    |
+                        |  |   (port 8000)             |----------> console.redhat.com
+                        |  |   A2A / JSON-RPC 2.0      |    |       (via MCP)
+                        |  |   OAuth 2.0 (Red Hat SSO) |    |
+                        |  +-----------+---------------+    |
+                        |              | localhost:8081      |
+                        |  +-----------v---------------+    |
+                        |  |   lightspeed-mcp           |    |
+                        |  |   (sidecar)                |    |
+                        |  |   Red Hat Lightspeed MCP   |    |
+                        |  +---------------------------+    |
+                        +-----------------------------------+
+                             |                    |
+              +--------------+--+    +------------+----------+
+              |  PostgreSQL     |    |  Redis                 |
+              |  (sessions)     |    |  (rate limiting)       |
+              |  Port 5432      |    |  Port 6379             |
+              +-----------------+    +------------------------+
+```
+
+### With marketplace handler (`handler.enabled=true`)
+
+```
+  Google Cloud                                 OpenShift Cluster
+  Marketplace                                  +---------------------------------+
+  (Pub/Sub)                                    |                                 |
+      |                                        |  +---------------------------+  |
+      +------ push ----------------------------+->|  handler Route            |  |
+                                               |  +------------+--------------+  |
+                                               |               |                 |
+  Gemini                                       |  +------------v--------------+  |
+  Enterprise                                   |  |  marketplace-handler      |  |
+      |                                        |  |  (port 8001)              |  |
+      +------ DCR -----------------------------+->|  Pub/Sub + DCR endpoint   |  |
+                                               |  +---+-----------+-----------+  |
+                                               |      |           |              |
+                                               |      v           v              |
+                                               |  Procurement   Keycloak         |
+                                               |  API (GCP)     (Red Hat SSO)    |
+                                               |                                 |
+                                               |  +---------------------------+  |
+                                               |  |  agent Route              |  |
+                                               |  +------------+--------------+  |
+                                               |               |                 |
+                                               |  +------------v--------------+  |
+                                               |  |  lightspeed-agent (Pod)   |  |
+                                               |  |  agent + MCP sidecar      |  |
+                                               |  +---+-----------+-----------+  |
+                                               |      |           |              |
+                                               |      v           v              |
+                                               |  PostgreSQL    Redis            |
+                                               |  (shared)      (rate limiting)  |
+                                               +---------------------------------+
 ```
 
 ## Components
@@ -45,8 +87,9 @@ is still enforced.
 |---|---|
 | **lightspeed-agent** | Main A2A agent (Gemini + Google ADK) |
 | **lightspeed-mcp** | Red Hat Lightspeed MCP server (sidecar in agent pod) providing tools for console.redhat.com APIs |
-| **postgresql** | PostgreSQL 16 for ADK session persistence |
+| **postgresql** | PostgreSQL 16 for ADK session persistence (and marketplace data when handler is enabled) |
 | **redis** | Redis 7 for distributed rate limiting |
+| **marketplace-handler** | *(optional)* Marketplace handler for Pub/Sub events and DCR from Gemini Enterprise |
 
 ## Prerequisites
 
@@ -58,6 +101,14 @@ is still enforced.
   - `quay.io/fedora/redis-7`
 - A Google AI Studio API key or Vertex AI project
 - Red Hat SSO OAuth credentials (client ID and secret)
+
+**Additional prerequisites when enabling the marketplace handler:**
+- OpenShift cluster running inside Google Cloud (for Pub/Sub push delivery)
+- A GCP service account with the following roles:
+  - `roles/cloudcommerceprocurement.admin` (Procurement API access)
+  - `roles/servicecontrol.reporter` (if Service Control is enabled)
+- A Keycloak Initial Access Token for DCR
+- A Fernet encryption key (generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`)
 
 ## Deployment Steps
 
@@ -75,6 +126,13 @@ registry:
 ```bash
 podman build -t quay.io/<your-org>/lightspeed-agent:latest -f Containerfile .
 podman push quay.io/<your-org>/lightspeed-agent:latest
+```
+
+If enabling the marketplace handler, also build its image:
+
+```bash
+podman build -t quay.io/<your-org>/lightspeed-agent-handler:latest -f Containerfile.marketplace-handler .
+podman push quay.io/<your-org>/lightspeed-agent-handler:latest
 ```
 
 If using a different registry or tag, set the image in `values.yaml` or pass it
@@ -118,6 +176,9 @@ secrets:
 | `redis.storage.size` | Redis PVC size | `1Gi` |
 | `route.enabled` | Create an OpenShift Route | `true` |
 | `auth.skipOrderValidation` | Skip marketplace order checks | `true` |
+| `handler.enabled` | Deploy the marketplace handler | `false` |
+| `handler.serviceControlServiceName` | Marketplace product identifier | `""` |
+| `serviceControl.enabled` | Enable Service Control usage reporting | `false` |
 
 See `values.yaml` for the full list of configurable options.
 
@@ -176,9 +237,125 @@ The agent authenticates requests via Red Hat SSO token introspection:
 2. The agent validates the token via the SSO introspection endpoint
 3. The required scope (`agent:insights` by default) is checked
 
-Since there is no marketplace handler in this deployment, order-id validation
-is disabled (`SKIP_ORDER_VALIDATION=true`). The agent does not need a marketplace
-database or DCR client registrations.
+When there is no marketplace handler (`handler.enabled=false`), order-id
+validation is disabled (`SKIP_ORDER_VALIDATION=true`). The agent does not need a
+marketplace database or DCR client registrations.
+
+When the handler is enabled, order-id validation should be turned on
+(`auth.skipOrderValidation=false`) so the agent verifies that each request is
+associated with an active marketplace entitlement.
+
+## Marketplace Handler (optional)
+
+For OpenShift clusters running **inside Google Cloud**, you can enable the
+marketplace handler to support the full Google Cloud Marketplace integration:
+
+- Receives Pub/Sub push events from Google Cloud Marketplace
+- Approves accounts and entitlements via the Procurement API
+- Handles Dynamic Client Registration (DCR) from Gemini Enterprise
+- Stores entitlements in the shared PostgreSQL database
+
+### 1. Create a GCP service account
+
+Create a service account in your GCP project and grant it the required roles:
+
+```bash
+PROJECT_ID="your-gcp-project"
+SA_NAME="lightspeed-handler"
+
+gcloud iam service-accounts create $SA_NAME \
+  --project=$PROJECT_ID \
+  --display-name="Lightspeed Marketplace Handler"
+
+# Grant Procurement API access
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/cloudcommerceprocurement.admin"
+
+# Grant Service Control access (if enabling usage reporting)
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/servicemanagement.serviceController"
+```
+
+### 2. Download and encode the service account key
+
+```bash
+gcloud iam service-accounts keys create sa-key.json \
+  --iam-account="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+
+# Base64-encode for the Helm values
+GCP_SA_KEY_B64=$(base64 -w0 sa-key.json)
+```
+
+### 3. Configure handler values
+
+Add the following to your `my-values.yaml`:
+
+```yaml
+handler:
+  enabled: true
+  image:
+    repository: quay.io/<your-org>/lightspeed-agent-handler
+  serviceControlServiceName: "your-product.gcpmarketplace.example.com"
+
+auth:
+  skipOrderValidation: false
+
+secrets:
+  databaseUrl: "postgresql+asyncpg://sessions:a-strong-password@lightspeed-agent-postgresql:5432/agent_sessions"
+  dcrInitialAccessToken: "your-keycloak-initial-access-token"
+  dcrEncryptionKey: "your-fernet-encryption-key"
+  gcpServiceAccountKey: "<base64-encoded-sa-key.json>"
+```
+
+### 4. Deploy or upgrade
+
+```bash
+helm upgrade --install lightspeed-agent deploy/openshift/ \
+  -f deploy/openshift/my-values.yaml \
+  -n lightspeed-agent
+```
+
+### 5. Configure Pub/Sub push subscription
+
+After the handler Route is created, configure a Pub/Sub push subscription to
+send events to the handler:
+
+```bash
+HANDLER_HOST=$(oc get route lightspeed-agent-handler -n lightspeed-agent -o jsonpath='{.spec.host}')
+
+gcloud pubsub subscriptions create marketplace-events-sub \
+  --topic="$PUBSUB_TOPIC" \
+  --push-endpoint="https://${HANDLER_HOST}/dcr" \
+  --push-auth-service-account="$PUBSUB_INVOKER_SA" \
+  --ack-deadline=60 \
+  --project="$PROJECT_ID"
+```
+
+> **Note**: The handler Route must be reachable from Google Cloud Pub/Sub. For
+> OpenShift clusters on GCP, this is typically the case as long as the Route has
+> a public hostname. The Pub/Sub push subscription authenticates itself with an
+> OIDC token signed by the push auth service account.
+
+### Handler configuration values
+
+| Value | Description | Default |
+|---|---|---|
+| `handler.enabled` | Enable the marketplace handler | `false` |
+| `handler.image.repository` | Handler container image | `quay.io/ecosystem-appeng/lightspeed-agent-handler` |
+| `handler.image.tag` | Handler image tag | `latest` |
+| `handler.replicas` | Number of handler replicas | `1` |
+| `handler.port` | Handler listen port | `8001` |
+| `handler.serviceControlServiceName` | Marketplace product identifier | `""` |
+| `handler.dcr.enabled` | Enable DCR with Keycloak | `true` |
+| `handler.dcr.clientNamePrefix` | Prefix for created OAuth client names | `gemini-order-` |
+| `handler.route.enabled` | Create a Route for the handler | `true` |
+| `serviceControl.enabled` | Enable Service Control usage reporting | `false` |
+| `secrets.dcrInitialAccessToken` | Keycloak Initial Access Token | `""` |
+| `secrets.dcrEncryptionKey` | Fernet key for encrypting client secrets | `""` |
+| `secrets.databaseUrl` | Marketplace database URL (shared PostgreSQL) | *(see values.yaml)* |
+| `secrets.gcpServiceAccountKey` | Base64-encoded GCP SA key JSON | `""` |
 
 ## Scaling
 
@@ -195,6 +372,9 @@ For automatic scaling, create a HorizontalPodAutoscaler:
 ```bash
 oc autoscale deployment/lightspeed-agent --min=1 --max=5 --cpu-percent=80 -n lightspeed-agent
 ```
+
+> **Note**: The marketplace handler should typically run with a single replica
+> to avoid processing duplicate Pub/Sub events.
 
 ## Upgrading
 
@@ -214,6 +394,9 @@ oc logs deployment/lightspeed-agent -c lightspeed-agent -n lightspeed-agent
 
 # Lightspeed MCP server logs
 oc logs deployment/lightspeed-agent -c lightspeed-mcp -n lightspeed-agent
+
+# Marketplace handler logs (if enabled)
+oc logs deployment/lightspeed-agent-handler -n lightspeed-agent
 
 # PostgreSQL logs
 oc logs deployment/lightspeed-agent-postgresql -n lightspeed-agent
@@ -244,6 +427,14 @@ the `SESSION_DATABASE_URL` in the secret matches the service name and port.
 
 **Health check failing**: Check agent logs for startup errors. Common causes
 include missing secrets or unreachable database/Redis services.
+
+**Handler cannot reach Procurement API**: Verify the GCP service account key is
+correctly base64-encoded in `secrets.gcpServiceAccountKey` and that the service
+account has the required IAM roles.
+
+**Pub/Sub events not arriving**: Verify the handler Route is externally
+accessible and the Pub/Sub push subscription is configured with the correct
+endpoint URL (`https://<handler-route-host>/dcr`).
 
 ## Cleanup
 

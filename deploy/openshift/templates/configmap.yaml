@@ -42,8 +42,15 @@ data:
   RATE_LIMIT_REQUESTS_PER_MINUTE: {{ .Values.rateLimit.requestsPerMinute | quote }}
   RATE_LIMIT_REQUESTS_PER_HOUR: {{ .Values.rateLimit.requestsPerHour | quote }}
 
-  # Google Cloud Service Control (disabled for OpenShift)
-  SERVICE_CONTROL_ENABLED: "false"
+  # Google Cloud Service Control
+  SERVICE_CONTROL_ENABLED: {{ .Values.serviceControl.enabled | quote }}
+
+  # Marketplace Handler
+  HANDLER_HOST: {{ .Values.handler.host | quote }}
+  HANDLER_PORT: {{ .Values.handler.port | quote }}
+  DCR_ENABLED: {{ .Values.handler.dcr.enabled | quote }}
+  DCR_CLIENT_NAME_PREFIX: {{ .Values.handler.dcr.clientNamePrefix | quote }}
+  SERVICE_CONTROL_SERVICE_NAME: {{ .Values.handler.serviceControlServiceName | quote }}
 
   # Authentication
   SKIP_JWT_VALIDATION: {{ .Values.auth.skipJwtValidation | quote }}

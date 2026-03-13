@@ -140,6 +140,41 @@ redis:
       memory: 256Mi
 
 # ---------------------------------------------------------------------------
+# Marketplace Handler (optional — enable for GCP deployments with
+# Google Cloud Marketplace integration)
+# ---------------------------------------------------------------------------
+handler:
+  enabled: false
+  image:
+    repository: quay.io/ecosystem-appeng/lightspeed-agent-handler
+    tag: latest
+    pullPolicy: Always
+  replicas: 1
+  host: "0.0.0.0"
+  port: 8001
+  # Marketplace product identifier (managed service name from Producer Portal).
+  # Required for entitlement approval and product-level Pub/Sub event filtering.
+  serviceControlServiceName: ""
+  dcr:
+    enabled: true
+    clientNamePrefix: "gemini-order-"
+  route:
+    enabled: true
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Google Cloud Service Control (usage reporting)
+# ---------------------------------------------------------------------------
+serviceControl:
+  enabled: false
+
+# ---------------------------------------------------------------------------
 # Route
 # ---------------------------------------------------------------------------
 route:
@@ -164,3 +199,13 @@ secrets:
   sessionDbPassword: "sessions"
   # Full connection URL (contains credentials, stored in the Secret)
   sessionDatabaseUrl: "postgresql+asyncpg://sessions:sessions@lightspeed-agent-postgresql:5432/agent_sessions"
+  # --- Handler secrets (only needed when handler.enabled=true) ---
+  # Marketplace database URL (shared with agent for order validation).
+  # Points to the same PostgreSQL instance by default.
+  databaseUrl: "postgresql+asyncpg://sessions:sessions@lightspeed-agent-postgresql:5432/agent_sessions"
+  # Keycloak Initial Access Token for Dynamic Client Registration
+  dcrInitialAccessToken: ""
+  # Fernet key for encrypting stored client secrets
+  dcrEncryptionKey: ""
+  # Base64-encoded GCP service account key JSON (for ADC outside Cloud Run)
+  gcpServiceAccountKey: ""

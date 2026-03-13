@@ -1,0 +1,18 @@
+{{- if .Values.handler.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lightspeed-agent.handlerServiceName" . }}
+  labels:
+    {{- include "lightspeed-agent.labels" . | nindent 4 }}
+    app.kubernetes.io/component: handler
+spec:
+  selector:
+    {{- include "lightspeed-agent.handlerSelectorLabels" . | nindent 4 }}
+  ports:
+    - port: {{ .Values.handler.port }}
+      targetPort: {{ .Values.handler.port }}
+      protocol: TCP
+      name: http
+  type: ClusterIP
+{{- end }}

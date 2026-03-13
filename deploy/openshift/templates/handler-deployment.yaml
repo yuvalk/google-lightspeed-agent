@@ -1,35 +1,35 @@
+{{- if .Values.handler.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "lightspeed-agent.fullname" . }}
+  name: {{ include "lightspeed-agent.handlerServiceName" . }}
   labels:
     {{- include "lightspeed-agent.labels" . | nindent 4 }}
-    app.kubernetes.io/component: agent
+    app.kubernetes.io/component: handler
 spec:
-  replicas: {{ .Values.agent.replicas }}
+  replicas: {{ .Values.handler.replicas }}
   selector:
     matchLabels:
-      {{- include "lightspeed-agent.agentSelectorLabels" . | nindent 6 }}
+      {{- include "lightspeed-agent.handlerSelectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "lightspeed-agent.agentSelectorLabels" . | nindent 8 }}
+        {{- include "lightspeed-agent.handlerSelectorLabels" . | nindent 8 }}
     spec:
       containers:
-        # ===================================================================
-        # Lightspeed Agent
-        # ===================================================================
-        - name: lightspeed-agent
-          image: {{ printf "%s:%s" .Values.agent.image.repository .Values.agent.image.tag }}
-          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+        - name: marketplace-handler
+          image: {{ printf "%s:%s" .Values.handler.image.repository .Values.handler.image.tag }}
+          imagePullPolicy: {{ .Values.handler.image.pullPolicy }}
           ports:
-            - containerPort: {{ .Values.agent.port }}
+            - containerPort: {{ .Values.handler.port }}
               protocol: TCP
               name: http
           envFrom:
             - configMapRef:
                 name: {{ include "lightspeed-agent.fullname" . }}-config
           env:
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /var/run/secrets/gcp/sa-key.json
             - name: GOOGLE_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -51,59 +51,48 @@ spec:
                 secretKeyRef:
                   name: {{ include "lightspeed-agent.fullname" . }}-secrets
                   key: RED_HAT_SSO_CLIENT_SECRET
-            - name: SESSION_DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "lightspeed-agent.fullname" . }}-secrets
-                  key: SESSION_DATABASE_URL
-                  optional: true
-            {{- if .Values.handler.enabled }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ include "lightspeed-agent.fullname" . }}-secrets
                   key: DATABASE_URL
-            {{- end }}
+            - name: DCR_INITIAL_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lightspeed-agent.fullname" . }}-secrets
+                  key: DCR_INITIAL_ACCESS_TOKEN
+            - name: DCR_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lightspeed-agent.fullname" . }}-secrets
+                  key: DCR_ENCRYPTION_KEY
+          volumeMounts:
+            - name: gcp-sa-key
+              mountPath: /var/run/secrets/gcp
+              readOnly: true
           resources:
-            {{- toYaml .Values.agent.resources | nindent 12 }}
+            {{- toYaml .Values.handler.resources | nindent 12 }}
           startupProbe:
             httpGet:
               path: /health
-              port: {{ .Values.agent.port }}
+              port: {{ .Values.handler.port }}
             initialDelaySeconds: 5
             periodSeconds: 10
             failureThreshold: 6
           readinessProbe:
             httpGet:
               path: /ready
-              port: {{ .Values.agent.port }}
+              port: {{ .Values.handler.port }}
             periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
-              port: {{ .Values.agent.port }}
+              port: {{ .Values.handler.port }}
             periodSeconds: 30
             failureThreshold: 3
-
-        # ===================================================================
-        # Red Hat Lightspeed MCP Server (Sidecar)
-        # ===================================================================
-        - name: lightspeed-mcp
-          image: {{ printf "%s:%s" .Values.mcp.image.repository .Values.mcp.image.tag }}
-          imagePullPolicy: {{ .Values.mcp.image.pullPolicy }}
-          envFrom:
-            - configMapRef:
-                name: {{ include "lightspeed-agent.fullname" . }}-config
-          args:
-            - "--debug"
-            - "$(MCP_SERVER_MODE)"
-            - "--port"
-            - "$(MCP_SERVER_PORT)"
-            - "--host"
-            - "$(MCP_SERVER_HOST)"
-          ports:
-            - containerPort: {{ .Values.mcp.port }}
-              protocol: TCP
-          resources:
-            {{- toYaml .Values.mcp.resources | nindent 12 }}
+      volumes:
+        - name: gcp-sa-key
+          secret:
+            secretName: {{ include "lightspeed-agent.fullname" . }}-gcp-sa-key
+{{- end }}

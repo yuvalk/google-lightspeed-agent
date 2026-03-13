@@ -70,3 +70,18 @@ Redis service name
 {{- define "lightspeed-agent.redisServiceName" -}}
 {{- include "lightspeed-agent.fullname" . }}-redis
 {{- end }}
+
+{{/*
+Selector labels for the marketplace handler
+*/}}
+{{- define "lightspeed-agent.handlerSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "lightspeed-agent.fullname" . }}-handler
+app.kubernetes.io/component: handler
+{{- end }}
+
+{{/*
+Handler service name
+*/}}
+{{- define "lightspeed-agent.handlerServiceName" -}}
+{{- include "lightspeed-agent.fullname" . }}-handler
+{{- end }}
