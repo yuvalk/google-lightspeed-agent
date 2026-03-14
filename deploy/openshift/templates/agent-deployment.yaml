@@ -15,11 +15,20 @@ spec:
       labels:
         {{- include "lightspeed-agent.agentSelectorLabels" . | nindent 8 }}
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         # ===================================================================
         # Lightspeed Agent
         # ===================================================================
         - name: lightspeed-agent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: {{ printf "%s:%s" .Values.agent.image.repository .Values.agent.image.tag }}
           imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
           ports:
@@ -90,6 +99,11 @@ spec:
         # Red Hat Lightspeed MCP Server (Sidecar)
         # ===================================================================
         - name: lightspeed-mcp
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: {{ printf "%s:%s" .Values.mcp.image.repository .Values.mcp.image.tag }}
           imagePullPolicy: {{ .Values.mcp.image.pullPolicy }}
           envFrom:

@@ -17,8 +17,17 @@ spec:
       labels:
         {{- include "lightspeed-agent.postgresqlSelectorLabels" . | nindent 8 }}
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: postgresql
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: {{ printf "%s:%s" .Values.postgresql.image.repository .Values.postgresql.image.tag }}
           imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
           ports:

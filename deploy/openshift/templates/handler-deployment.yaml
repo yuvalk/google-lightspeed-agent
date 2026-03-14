@@ -16,8 +16,17 @@ spec:
       labels:
         {{- include "lightspeed-agent.handlerSelectorLabels" . | nindent 8 }}
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: marketplace-handler
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: {{ printf "%s:%s" .Values.handler.image.repository .Values.handler.image.tag }}
           imagePullPolicy: {{ .Values.handler.image.pullPolicy }}
           ports:
