@@ -192,17 +192,17 @@ secrets:
   # Set to true to have the chart create the Secret from the values below.
   # Set to false if you manage the Secret externally.
   create: true
-  googleApiKey: "your-google-api-key"
+  googleApiKey: ""
   googleCloudProject: ""
-  redHatSsoClientId: "your-sso-client-id"
-  redHatSsoClientSecret: "your-sso-client-secret"
-  sessionDbPassword: "sessions"
+  redHatSsoClientId: ""
+  redHatSsoClientSecret: ""
+  sessionDbPassword: ""
   # Full connection URL (contains credentials, stored in the Secret)
-  sessionDatabaseUrl: "postgresql+asyncpg://sessions:sessions@lightspeed-agent-postgresql:5432/agent_sessions"
+  sessionDatabaseUrl: ""
   # --- Handler secrets (only needed when handler.enabled=true) ---
   # Marketplace database URL (shared with agent for order validation).
   # Points to the same PostgreSQL instance by default.
-  databaseUrl: "postgresql+asyncpg://sessions:sessions@lightspeed-agent-postgresql:5432/agent_sessions"
+  databaseUrl: ""
   # Keycloak Initial Access Token for Dynamic Client Registration
   dcrInitialAccessToken: ""
   # Fernet key for encrypting stored client secrets
