@@ -69,7 +69,7 @@ The model is configured in `src/lightspeed_agent/config/settings.py` and used vi
 | `registry.redhat.io` | `rhel9/postgresql-16` | PostgreSQL for Podman deployments |
 | `quay.io` | `red-hat-lightspeed-mcp` | MCP server sidecar |
 | `ghcr.io` | `red-hat-lightspeed-mcp` | MCP server (alternate registry) |
-| `docker.io` | `redis:7-alpine` | Redis for rate limiting |
+| `quay.io` | `fedora/redis-7` | Redis for rate limiting (production uses Cloud Memorystore) |
 
 ## Google JWT Validation Endpoint
 
