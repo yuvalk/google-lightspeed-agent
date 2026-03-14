@@ -370,6 +370,12 @@ class Settings(BaseSettings):
                 "production. Use PostgreSQL "
                 "(e.g., postgresql+asyncpg://user:pass@host/db)."
             )
+        if self.session_database_url and "sqlite" in self.session_database_url.lower():
+            violations.append(
+                "Guard 5 (PostgreSQL): SESSION_DATABASE_URL must not use "
+                "SQLite in production. Use PostgreSQL "
+                "(e.g., postgresql+asyncpg://user:pass@host/db)."
+            )
 
         # Guard 6: Force MCP http transport
         if self.mcp_transport_mode != "http":
