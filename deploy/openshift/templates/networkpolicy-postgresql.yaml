@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "lightspeed-agent.postgresqlServiceName" . }}
+  labels:
+    {{- include "lightspeed-agent.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: database
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: agent
+        {{- if .Values.handler.enabled }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: handler
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 5432
