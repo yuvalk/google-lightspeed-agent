@@ -338,15 +338,29 @@ class Settings(BaseSettings):
             )
 
         # Guard 4: Force HTTPS on all URLs
+        def _safe_scheme(url: str) -> str:
+            """Return scheme portion of a URL without leaking credentials."""
+            return url.split("://")[0] if "://" in url else url.split(":")[0]
+
         if not self.agent_provider_url.startswith("https://"):
             violations.append(
                 "Guard 4 (HTTPS): AGENT_PROVIDER_URL must start with "
-                f"https:// in production. Got: {self.agent_provider_url}"
+                f"https:// in production. Got scheme: {_safe_scheme(self.agent_provider_url)}"
             )
         if not self.mcp_server_url.startswith("https://"):
             violations.append(
                 "Guard 4 (HTTPS): MCP_SERVER_URL must start with https:// "
-                f"in production. Got: {self.mcp_server_url}"
+                f"in production. Got scheme: {_safe_scheme(self.mcp_server_url)}"
+            )
+        if self.marketplace_handler_url and not self.marketplace_handler_url.startswith("https://"):
+            violations.append(
+                "Guard 4 (HTTPS): MARKETPLACE_HANDLER_URL must start with "
+                f"https:// in production. Got scheme: {_safe_scheme(self.marketplace_handler_url)}"
+            )
+        if self.red_hat_sso_issuer and not self.red_hat_sso_issuer.startswith("https://"):
+            violations.append(
+                "Guard 4 (HTTPS): RED_HAT_SSO_ISSUER must start with "
+                f"https:// in production. Got scheme: {_safe_scheme(self.red_hat_sso_issuer)}"
             )
 
         # Guard 5: Force PostgreSQL
