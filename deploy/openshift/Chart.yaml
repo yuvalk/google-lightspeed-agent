@@ -3,7 +3,7 @@ name: lightspeed-agent
 description: Red Hat Lightspeed Agent for OpenShift
 type: application
 version: 0.1.0
-appVersion: "latest"
+appVersion: "0.1.0"  # Update with each release
 keywords:
   - lightspeed
   - agent
