@@ -121,3 +121,13 @@ spec:
               protocol: TCP
           resources:
             {{- toYaml .Values.mcp.resources | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.mcp.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.mcp.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
