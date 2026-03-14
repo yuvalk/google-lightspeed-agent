@@ -30,7 +30,7 @@ The model is configured in `src/lightspeed_agent/config/settings.py` and used vi
 | **Service Control API** | Usage metering & billing reporting to GCP Marketplace | For marketplace | `SERVICE_CONTROL_SERVICE_NAME`, `SERVICE_CONTROL_ENABLED` |
 | **Cloud IAM** | Service account management, role bindings, token creation | For deployment | `deploy/cloudrun/setup.sh` |
 | **Cloud Build** | Container image builds | For deployment | `deploy/cloudrun/deploy.sh` |
-| **Artifact Registry** | Container image storage | For deployment | `gcr.io/{PROJECT_ID}/...` |
+| **Container Registry (gcr.io)** | Container image storage | For deployment | `gcr.io/{PROJECT_ID}/...` |
 
 ## Red Hat Services
 
