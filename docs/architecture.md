@@ -104,6 +104,7 @@ The system is split into two services for important operational reasons:
 2. **Agent can be deployed on-demand** after a customer has been provisioned
 3. **Separation of concerns**: Provisioning logic is isolated from agent logic
 4. **Independent scaling**: Handler scales for provisioning traffic, Agent scales for user traffic
+5. **Independent security perimeters**: Each service can have its own Google Cloud Load Balancer with independent Cloud Armor WAF policies, SSL certificates, and DDoS protection. See [Cloud Run deployment](../deploy/cloudrun/README.md#load-balancer-optional)
 
 ## Components
 

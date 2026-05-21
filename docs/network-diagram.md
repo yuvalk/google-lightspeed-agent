@@ -48,11 +48,21 @@ graph TB
         REDIS[("Redis :6379<br/>─────────────<br/>Rate limiting<br/>60 req/min<br/>1000 req/hr")]
     end
 
+    subgraph "Per-Service Load Balancers (Optional)"
+        AGENT_LB["Agent LB<br/>HTTPS :443<br/>─────────────<br/>SSL termination<br/>Cloud Armor WAF<br/>DDoS protection"]
+        HANDLER_LB["Handler LB<br/>HTTPS :443<br/>─────────────<br/>SSL termination<br/>Cloud Armor WAF<br/>DDoS protection"]
+    end
+
     %% === INGRESS (External → Services) ===
-    CLIENT -- "HTTPS :8000<br/>POST / (A2A JSON-RPC)<br/>Bearer JWT" --> AGENT
-    CLIENT -- "HTTPS :8000<br/>GET /.well-known/agent.json" --> AGENT
-    CLIENT -- "HTTPS :8001<br/>POST /dcr" --> MKTPLACE
-    PUBSUB -- "HTTPS :8001<br/>POST /dcr (Pub/Sub msg)" --> MKTPLACE
+    %% Without GCLB: CLIENT connects directly to AGENT :8000 and MKTPLACE :8001
+    %% With GCLB (shown below): external traffic goes through LBs on :443
+    CLIENT -- "HTTPS :443<br/>POST / (A2A JSON-RPC)<br/>Bearer JWT" --> AGENT_LB
+    CLIENT -- "HTTPS :443<br/>GET /.well-known/agent.json" --> AGENT_LB
+    CLIENT -- "HTTPS :443<br/>POST /dcr" --> HANDLER_LB
+    AGENT_LB -- ":8000" --> AGENT
+    HANDLER_LB -- ":8001" --> MKTPLACE
+    %% Pub/Sub is internal traffic — bypasses LBs
+    PUBSUB -- "HTTPS :8001<br/>POST /dcr (Pub/Sub msg)<br/>(internal, bypasses LB)" --> MKTPLACE
 
     %% === INTER-COMPONENT (Internal) ===
     AGENT -- "HTTP :8080/:8081<br/>/mcp<br/>+ JWT forwarding" --> MCP
@@ -95,6 +105,8 @@ graph TB
 
 | Port | Protocol | Component | Direction | Purpose |
 |------|----------|-----------|-----------|---------|
+| **443** | HTTPS | Agent GCLB (optional) | **Ingress** | SSL termination, Cloud Armor WAF → forwards to Agent :8000 |
+| **443** | HTTPS | Handler GCLB (optional) | **Ingress** | SSL termination, Cloud Armor WAF → forwards to Handler :8001 |
 | **8000** | HTTP/S | Agent Service | **Ingress** | A2A JSON-RPC, AgentCard, service-control admin |
 | **8001** | HTTP/S | Marketplace Handler | **Ingress** | DCR registration, Pub/Sub provisioning events |
 | **8002** | HTTP | Agent Probe Server | **Ingress** | Agent health (`/health`) and readiness (`/ready`) probes |
@@ -127,3 +139,5 @@ graph TB
 4. **MCP port varies by deployment** -- Cloud Run uses :8080 (sidecar default), Podman uses :8081 to avoid conflict with A2A Inspector which also binds :8080 in dev.
 
 5. **All external egress is HTTPS :443** -- No non-TLS external connections. Internal connections (DB, Redis, MCP) are unencrypted but within the same pod/VPC.
+
+6. **Optional per-service GCLB** -- When enabled, each service gets its own independent Google Cloud Load Balancer (:443) with SSL termination, Cloud Armor WAF, and DDoS protection. Cloud Run ingress is restricted to `internal-and-cloud-load-balancing`, blocking direct external access. Pub/Sub traffic is internal and bypasses the LBs. See [Cloud Run deployment](../deploy/cloudrun/README.md#load-balancer-optional) for configuration.
