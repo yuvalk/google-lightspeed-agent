@@ -51,10 +51,29 @@ PUBSUB_INVOKER_SA="${PUBSUB_INVOKER_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 # Optional features
 ENABLE_MARKETPLACE="${ENABLE_MARKETPLACE:-true}"
 
+# Per-service load balancer configuration
+ENABLE_LB_AGENT="${ENABLE_LB_AGENT:-false}"
+ENABLE_LB_HANDLER="${ENABLE_LB_HANDLER:-false}"
+AGENT_DOMAIN_NAME="${AGENT_DOMAIN_NAME:-}"
+HANDLER_DOMAIN_NAME="${HANDLER_DOMAIN_NAME:-}"
+LB_NAME="${LB_NAME:-lightspeed-lb}"
+
 # Validate required variables
 if [[ -z "$PROJECT_ID" ]]; then
     log_error "GOOGLE_CLOUD_PROJECT environment variable is required"
     echo "  export GOOGLE_CLOUD_PROJECT=your-project-id"
+    exit 1
+fi
+
+if [[ "$ENABLE_LB_AGENT" == "true" && -z "$AGENT_DOMAIN_NAME" ]]; then
+    log_error "AGENT_DOMAIN_NAME is required when ENABLE_LB_AGENT=true"
+    echo "  export AGENT_DOMAIN_NAME=agent.example.com"
+    exit 1
+fi
+
+if [[ "$ENABLE_LB_HANDLER" == "true" && -z "$HANDLER_DOMAIN_NAME" ]]; then
+    log_error "HANDLER_DOMAIN_NAME is required when ENABLE_LB_HANDLER=true"
+    echo "  export HANDLER_DOMAIN_NAME=dcr.example.com"
     exit 1
 fi
 
@@ -66,6 +85,8 @@ log_info "Handler service: $HANDLER_SERVICE_NAME"
 log_info "DB instance: $DB_INSTANCE_NAME"
 log_info "Pub/Sub invoker SA: $PUBSUB_INVOKER_NAME"
 log_info "Marketplace integration: $ENABLE_MARKETPLACE"
+log_info "Agent load balancer: $ENABLE_LB_AGENT"
+log_info "Handler load balancer: $ENABLE_LB_HANDLER"
 
 # =============================================================================
 # Step 1: Enable Required APIs
@@ -95,6 +116,11 @@ apis=(
     "redis.googleapis.com"
     "vpcaccess.googleapis.com"
 )
+
+# Add Compute Engine API when any load balancer is enabled
+if [[ "$ENABLE_LB_AGENT" == "true" || "$ENABLE_LB_HANDLER" == "true" ]]; then
+    apis+=("compute.googleapis.com")
+fi
 
 for api in "${apis[@]}"; do
     log_info "  Enabling $api..."
@@ -303,6 +329,43 @@ else
 fi
 
 # =============================================================================
+# Step 5: Set Up Load Balancer Resources (Optional, per-service)
+# =============================================================================
+
+# Reserve a static IP and create a Google-managed SSL certificate for one service.
+setup_lb_resources() {
+    local service_label="$1"
+    local domain_name="$2"
+    local ip_name="${LB_NAME}-${service_label}-ip"
+    local cert_name="${LB_NAME}-${service_label}-cert"
+
+    log_info "Setting up ${service_label} load balancer resources..."
+
+    if ! gcloud compute addresses describe "$ip_name" --global --project="$PROJECT_ID" &>/dev/null; then
+        gcloud compute addresses create "$ip_name" --global --project="$PROJECT_ID"
+        log_info "Static IP address '$ip_name' reserved"
+    else
+        log_info "Static IP address '$ip_name' already exists"
+    fi
+
+    log_info "${service_label^} static IP: $(gcloud compute addresses describe "$ip_name" --global --project="$PROJECT_ID" --format='value(address)')"
+
+    if ! gcloud compute ssl-certificates describe "$cert_name" --global --project="$PROJECT_ID" &>/dev/null; then
+        gcloud compute ssl-certificates create "$cert_name" --domains="$domain_name" --global --project="$PROJECT_ID"
+        log_info "Managed SSL certificate '$cert_name' created for $domain_name"
+    else
+        log_info "Managed SSL certificate '$cert_name' already exists"
+    fi
+}
+
+[[ "$ENABLE_LB_AGENT" == "true" ]] && setup_lb_resources "agent" "$AGENT_DOMAIN_NAME"
+[[ "$ENABLE_LB_HANDLER" == "true" ]] && setup_lb_resources "handler" "$HANDLER_DOMAIN_NAME"
+
+if [[ "$ENABLE_LB_AGENT" != "true" && "$ENABLE_LB_HANDLER" != "true" ]]; then
+    log_info "Skipping load balancer setup (no per-service LBs enabled)"
+fi
+
+# =============================================================================
 # Summary
 # =============================================================================
 echo ""
@@ -314,6 +377,28 @@ echo "Service accounts created:"
 echo "  Runtime SA:         $SERVICE_ACCOUNT"
 if [[ "$ENABLE_MARKETPLACE" == "true" ]]; then
     echo "  Pub/Sub Invoker SA: $PUBSUB_INVOKER_SA"
+fi
+if [[ "$ENABLE_LB_AGENT" == "true" ]]; then
+    AGENT_LB_IP=$(gcloud compute addresses describe "${LB_NAME}-agent-ip" --global --project="$PROJECT_ID" --format='value(address)')
+    echo ""
+    echo "Agent load balancer resources:"
+    echo "  Static IP:    $AGENT_LB_IP"
+    echo "  SSL cert:     ${LB_NAME}-agent-cert (domain: $AGENT_DOMAIN_NAME)"
+    echo ""
+    log_warn "Configure DNS for the agent before deploying:"
+    echo "  Create an A record: $AGENT_DOMAIN_NAME → $AGENT_LB_IP"
+    echo "  SSL provisioning requires DNS to resolve to this IP."
+fi
+if [[ "$ENABLE_LB_HANDLER" == "true" ]]; then
+    HANDLER_LB_IP=$(gcloud compute addresses describe "${LB_NAME}-handler-ip" --global --project="$PROJECT_ID" --format='value(address)')
+    echo ""
+    echo "Handler load balancer resources:"
+    echo "  Static IP:    $HANDLER_LB_IP"
+    echo "  SSL cert:     ${LB_NAME}-handler-cert (domain: $HANDLER_DOMAIN_NAME)"
+    echo ""
+    log_warn "Configure DNS for the handler before deploying:"
+    echo "  Create an A record: $HANDLER_DOMAIN_NAME → $HANDLER_LB_IP"
+    echo "  SSL provisioning requires DNS to resolve to this IP."
 fi
 echo ""
 echo "Next steps:"

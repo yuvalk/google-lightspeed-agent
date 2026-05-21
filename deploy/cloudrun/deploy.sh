@@ -14,8 +14,9 @@
 #   ./deploy/cloudrun/deploy.sh [OPTIONS]
 #
 # Options:
-#   --service <service>       Which service to deploy: all, handler, agent
+#   --service <service>       Which service to deploy: all, handler, agent, lb
 #                             (default: all)
+#                             "lb" sets up load balancers only (no service redeploy)
 #   --image <image>           Container image for the agent
 #                             (default: gcr.io/$PROJECT_ID/lightspeed-agent:latest)
 #   --handler-image <image>   Container image for the marketplace handler
@@ -74,6 +75,15 @@ PUBSUB_INVOKER_SA="${PUBSUB_INVOKER_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 
 # Marketplace configuration
 ENABLE_MARKETPLACE="${ENABLE_MARKETPLACE:-true}"
+
+# Per-service load balancer configuration
+ENABLE_LB_AGENT="${ENABLE_LB_AGENT:-false}"
+ENABLE_LB_HANDLER="${ENABLE_LB_HANDLER:-false}"
+ENABLE_CLOUD_ARMOR_AGENT="${ENABLE_CLOUD_ARMOR_AGENT:-false}"
+ENABLE_CLOUD_ARMOR_HANDLER="${ENABLE_CLOUD_ARMOR_HANDLER:-false}"
+AGENT_DOMAIN_NAME="${AGENT_DOMAIN_NAME:-}"
+HANDLER_DOMAIN_NAME="${HANDLER_DOMAIN_NAME:-}"
+LB_NAME="${LB_NAME:-lightspeed-lb}"
 SERVICE_CONTROL_SERVICE_NAME="${SERVICE_CONTROL_SERVICE_NAME:-}"
 PUBSUB_TOPIC="${PUBSUB_TOPIC:-marketplace-entitlements}"
 
@@ -128,7 +138,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             log_error "Unknown option: $1"
-            echo "Usage: $0 [--service all|handler|agent] [--image IMAGE] [--handler-image IMAGE] [--mcp-image IMAGE] [--allow-unauthenticated] [--build]"
+            echo "Usage: $0 [--service all|handler|agent|lb] [--image IMAGE] [--handler-image IMAGE] [--mcp-image IMAGE] [--allow-unauthenticated] [--build]"
             exit 1
             ;;
     esac
@@ -137,6 +147,28 @@ done
 # Validate required variables
 if [[ -z "$PROJECT_ID" ]]; then
     log_error "GOOGLE_CLOUD_PROJECT environment variable is required"
+    exit 1
+fi
+
+if [[ "$ENABLE_LB_AGENT" == "true" && -z "$AGENT_DOMAIN_NAME" ]]; then
+    log_error "AGENT_DOMAIN_NAME is required when ENABLE_LB_AGENT=true"
+    echo "  export AGENT_DOMAIN_NAME=agent.example.com"
+    exit 1
+fi
+
+if [[ "$ENABLE_LB_HANDLER" == "true" && -z "$HANDLER_DOMAIN_NAME" ]]; then
+    log_error "HANDLER_DOMAIN_NAME is required when ENABLE_LB_HANDLER=true"
+    echo "  export HANDLER_DOMAIN_NAME=dcr.example.com"
+    exit 1
+fi
+
+if [[ "$ENABLE_CLOUD_ARMOR_AGENT" == "true" && "$ENABLE_LB_AGENT" != "true" ]]; then
+    log_error "ENABLE_CLOUD_ARMOR_AGENT requires ENABLE_LB_AGENT=true"
+    exit 1
+fi
+
+if [[ "$ENABLE_CLOUD_ARMOR_HANDLER" == "true" && "$ENABLE_LB_HANDLER" != "true" ]]; then
+    log_error "ENABLE_CLOUD_ARMOR_HANDLER requires ENABLE_LB_HANDLER=true"
     exit 1
 fi
 
@@ -338,6 +370,180 @@ configure_pubsub_push() {
 }
 
 # =============================================================================
+# Configure per-service Google Cloud Load Balancer
+# =============================================================================
+# Creates an independent GCLB for a single Cloud Run service.
+# Usage: setup_service_lb <service_label> <cloud_run_service> <domain_name> <cloud_armor_enabled>
+#   service_label:      "agent" or "handler" (used in resource naming)
+#   cloud_run_service:  Cloud Run service name to front with the LB
+#   domain_name:        Domain for the Google-managed SSL certificate
+#   cloud_armor_enabled: "true" to create and attach a Cloud Armor WAF policy
+setup_service_lb() {
+    local service_label="$1"
+    local cloud_run_service="$2"
+    local domain_name="$3"
+    local cloud_armor_enabled="$4"
+
+    local neg_name="${LB_NAME}-${service_label}-neg"
+    local backend_name="${LB_NAME}-${service_label}-backend"
+    local policy_name="${LB_NAME}-${service_label}-security-policy"
+    local url_map_name="${LB_NAME}-${service_label}-url-map"
+    local cert_name="${LB_NAME}-${service_label}-cert"
+    local proxy_name="${LB_NAME}-${service_label}-https-proxy"
+    local rule_name="${LB_NAME}-${service_label}-forwarding-rule"
+    local ip_name="${LB_NAME}-${service_label}-ip"
+
+    log_info "Setting up load balancer for ${service_label} (${cloud_run_service})..."
+
+    # -------------------------------------------------------------------------
+    # Create serverless NEG
+    # -------------------------------------------------------------------------
+    if ! gcloud compute network-endpoint-groups describe "$neg_name" \
+        --region="$REGION" --project="$PROJECT_ID" &>/dev/null; then
+        gcloud compute network-endpoint-groups create "$neg_name" \
+            --region="$REGION" \
+            --network-endpoint-type=serverless \
+            --cloud-run-service="$cloud_run_service" \
+            --project="$PROJECT_ID"
+        log_info "NEG '$neg_name' created"
+    else
+        log_info "NEG '$neg_name' already exists"
+    fi
+
+    # -------------------------------------------------------------------------
+    # Create backend service
+    # -------------------------------------------------------------------------
+    if ! gcloud compute backend-services describe "$backend_name" \
+        --global --project="$PROJECT_ID" &>/dev/null; then
+        gcloud compute backend-services create "$backend_name" \
+            --global \
+            --project="$PROJECT_ID"
+        gcloud compute backend-services add-backend "$backend_name" \
+            --global \
+            --network-endpoint-group="$neg_name" \
+            --network-endpoint-group-region="$REGION" \
+            --project="$PROJECT_ID"
+        log_info "Backend service '$backend_name' created"
+    else
+        log_info "Backend service '$backend_name' already exists"
+    fi
+
+    # -------------------------------------------------------------------------
+    # Create Cloud Armor security policy (if enabled)
+    # -------------------------------------------------------------------------
+    if [[ "$cloud_armor_enabled" == "true" ]]; then
+        log_info "Configuring Cloud Armor security policy for ${service_label}..."
+
+        if ! gcloud compute security-policies describe "$policy_name" \
+            --global --project="$PROJECT_ID" &>/dev/null; then
+            gcloud compute security-policies create "$policy_name" \
+                --global \
+                --project="$PROJECT_ID"
+            log_info "Security policy '$policy_name' created"
+        else
+            log_info "Security policy '$policy_name' already exists"
+        fi
+
+        # Add preconfigured WAF rules (OWASP ModSecurity CRS)
+        declare -A WAF_RULES=(
+            [1000]="sqli-v33-stable"
+            [1100]="xss-v33-stable"
+            [1200]="lfi-v33-stable"
+            [1300]="rfi-v33-stable"
+            [1400]="rce-v33-stable"
+            [1500]="scannerdetection-v33-stable"
+            [1600]="protocolattack-v33-stable"
+            [1700]="sessionfixation-v33-stable"
+        )
+
+        for priority in $(echo "${!WAF_RULES[@]}" | tr ' ' '\n' | sort -n); do
+            local waf_rule_name="${WAF_RULES[$priority]}"
+            if ! gcloud compute security-policies rules describe "$priority" \
+                --security-policy="$policy_name" \
+                --global --project="$PROJECT_ID" &>/dev/null; then
+                gcloud compute security-policies rules create "$priority" \
+                    --security-policy="$policy_name" \
+                    --expression="evaluatePreconfiguredExpr('${waf_rule_name}')" \
+                    --action=deny-403 \
+                    --global \
+                    --project="$PROJECT_ID"
+                log_info "WAF rule '${waf_rule_name}' added at priority $priority"
+            else
+                log_info "WAF rule at priority $priority already exists"
+            fi
+        done
+
+        log_info "Attaching security policy to backend service..."
+        gcloud compute backend-services update "$backend_name" \
+            --security-policy="$policy_name" \
+            --global --project="$PROJECT_ID"
+        log_info "Cloud Armor security policy attached to '$backend_name'"
+    fi
+
+    # -------------------------------------------------------------------------
+    # Create URL map (simple default backend, no path routing needed)
+    # -------------------------------------------------------------------------
+    if ! gcloud compute url-maps describe "$url_map_name" \
+        --global --project="$PROJECT_ID" &>/dev/null; then
+        gcloud compute url-maps create "$url_map_name" \
+            --default-service="$backend_name" \
+            --global \
+            --project="$PROJECT_ID"
+        log_info "URL map '$url_map_name' created"
+    else
+        log_info "URL map '$url_map_name' already exists"
+    fi
+
+    # -------------------------------------------------------------------------
+    # Create HTTPS proxy with managed SSL certificate
+    # -------------------------------------------------------------------------
+    if ! gcloud compute ssl-certificates describe "$cert_name" \
+        --global --project="$PROJECT_ID" &>/dev/null; then
+        log_error "SSL certificate '$cert_name' does not exist. Run setup.sh first."
+        return 1
+    fi
+
+    if ! gcloud compute target-https-proxies describe "$proxy_name" \
+        --global --project="$PROJECT_ID" &>/dev/null; then
+        gcloud compute target-https-proxies create "$proxy_name" \
+            --ssl-certificates="$cert_name" \
+            --url-map="$url_map_name" \
+            --global \
+            --project="$PROJECT_ID"
+        log_info "HTTPS proxy '$proxy_name' created"
+    else
+        log_info "HTTPS proxy '$proxy_name' already exists"
+    fi
+
+    # -------------------------------------------------------------------------
+    # Create global forwarding rule
+    # -------------------------------------------------------------------------
+    if ! gcloud compute forwarding-rules describe "$rule_name" \
+        --global --project="$PROJECT_ID" &>/dev/null; then
+        gcloud compute forwarding-rules create "$rule_name" \
+            --global \
+            --target-https-proxy="$proxy_name" \
+            --address="$ip_name" \
+            --ports=443 \
+            --project="$PROJECT_ID"
+        log_info "Forwarding rule '$rule_name' created"
+    else
+        log_info "Forwarding rule '$rule_name' already exists"
+    fi
+
+    # -------------------------------------------------------------------------
+    # Override Cloud Run ingress to internal-and-cloud-load-balancing
+    # -------------------------------------------------------------------------
+    log_info "Updating $cloud_run_service ingress to internal-and-cloud-load-balancing..."
+    gcloud run services update "$cloud_run_service" \
+        --region="$REGION" \
+        --project="$PROJECT_ID" \
+        --ingress=internal-and-cloud-load-balancing \
+        --quiet
+    log_info "Cloud Run ingress updated for $cloud_run_service"
+}
+
+# =============================================================================
 # Main deployment
 # =============================================================================
 
@@ -363,17 +569,71 @@ case "$DEPLOY_SERVICE" in
         deploy_handler
         configure_pubsub_push
         deploy_agent
+        if [[ "$ENABLE_LB_HANDLER" == "true" ]]; then
+            setup_service_lb "handler" "$HANDLER_SERVICE_NAME" "$HANDLER_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_HANDLER"
+        else
+            log_info "No LB for handler — setting ingress to all..."
+            gcloud run services update "$HANDLER_SERVICE_NAME" \
+                --region="$REGION" --project="$PROJECT_ID" \
+                --ingress=all --quiet
+        fi
+        if [[ "$ENABLE_LB_AGENT" == "true" ]]; then
+            setup_service_lb "agent" "$SERVICE_NAME" "$AGENT_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_AGENT"
+        else
+            log_info "No LB for agent — setting ingress to all..."
+            gcloud run services update "$SERVICE_NAME" \
+                --region="$REGION" --project="$PROJECT_ID" \
+                --ingress=all --quiet
+        fi
         ;;
     handler)
         deploy_handler
         configure_pubsub_push
+        if [[ "$ENABLE_LB_HANDLER" == "true" ]]; then
+            setup_service_lb "handler" "$HANDLER_SERVICE_NAME" "$HANDLER_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_HANDLER"
+        else
+            log_info "No LB for handler — setting ingress to all..."
+            gcloud run services update "$HANDLER_SERVICE_NAME" \
+                --region="$REGION" --project="$PROJECT_ID" \
+                --ingress=all --quiet
+        fi
         ;;
     agent)
         deploy_agent
+        if [[ "$ENABLE_LB_AGENT" == "true" ]]; then
+            setup_service_lb "agent" "$SERVICE_NAME" "$AGENT_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_AGENT"
+        else
+            log_info "No LB for agent — setting ingress to all..."
+            gcloud run services update "$SERVICE_NAME" \
+                --region="$REGION" --project="$PROJECT_ID" \
+                --ingress=all --quiet
+        fi
+        ;;
+    lb)
+        log_info "Setting up load balancers only (no service redeploy)..."
+        if [[ "$ENABLE_LB_HANDLER" == "true" ]]; then
+            if ! gcloud run services describe "$HANDLER_SERVICE_NAME" \
+                --region="$REGION" --project="$PROJECT_ID" &>/dev/null; then
+                log_error "$HANDLER_SERVICE_NAME does not exist. Deploy it first before setting up its LB."
+                exit 1
+            fi
+            setup_service_lb "handler" "$HANDLER_SERVICE_NAME" "$HANDLER_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_HANDLER"
+        fi
+        if [[ "$ENABLE_LB_AGENT" == "true" ]]; then
+            if ! gcloud run services describe "$SERVICE_NAME" \
+                --region="$REGION" --project="$PROJECT_ID" &>/dev/null; then
+                log_error "$SERVICE_NAME does not exist. Deploy it first before setting up its LB."
+                exit 1
+            fi
+            setup_service_lb "agent" "$SERVICE_NAME" "$AGENT_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_AGENT"
+        fi
+        if [[ "$ENABLE_LB_AGENT" != "true" && "$ENABLE_LB_HANDLER" != "true" ]]; then
+            log_warn "No load balancers enabled. Set ENABLE_LB_AGENT=true and/or ENABLE_LB_HANDLER=true."
+        fi
         ;;
     *)
         log_error "Unknown service: $DEPLOY_SERVICE"
-        echo "Valid services: all, handler, agent"
+        echo "Valid services: all, handler, agent, lb"
         exit 1
         ;;
 esac
@@ -403,6 +663,40 @@ show_service_info() {
     fi
 }
 
+# Update AGENT_PROVIDER_URL and MARKETPLACE_HANDLER_URL on the agent service
+# so the AgentCard advertises the correct externally-reachable URLs.
+# When per-service LBs are enabled, uses GCLB domains instead of Cloud Run URLs.
+update_agentcard_urls() {
+    local service_url handler_url env_vars
+    service_url=$(gcloud run services describe "$SERVICE_NAME" \
+        --region="$REGION" --project="$PROJECT_ID" \
+        --format='value(status.url)' 2>/dev/null || echo "")
+    handler_url=$(gcloud run services describe "$HANDLER_SERVICE_NAME" \
+        --region="$REGION" --project="$PROJECT_ID" \
+        --format='value(status.url)' 2>/dev/null || echo "")
+
+    [[ "$ENABLE_LB_AGENT" == "true" ]] && service_url="https://$AGENT_DOMAIN_NAME"
+    [[ "$ENABLE_LB_HANDLER" == "true" ]] && handler_url="https://$HANDLER_DOMAIN_NAME"
+
+    [[ -z "$service_url" ]] && return
+
+    env_vars="AGENT_PROVIDER_URL=$service_url"
+    if [[ -n "$handler_url" ]]; then
+        env_vars="$env_vars,MARKETPLACE_HANDLER_URL=$handler_url"
+    else
+        log_warn "Could not retrieve $HANDLER_SERVICE_NAME URL. MARKETPLACE_HANDLER_URL not set."
+    fi
+
+    log_info "Updating agent env vars: $env_vars"
+    if gcloud run services update "$SERVICE_NAME" \
+        --region="$REGION" --project="$PROJECT_ID" \
+        --update-env-vars="$env_vars" --quiet 2>/dev/null; then
+        log_info "Agent env vars updated successfully"
+    else
+        log_warn "Could not update agent env vars. Set AGENT_PROVIDER_URL and MARKETPLACE_HANDLER_URL manually."
+    fi
+}
+
 # Show info for deployed services
 case "$DEPLOY_SERVICE" in
     all)
@@ -410,37 +704,7 @@ case "$DEPLOY_SERVICE" in
         show_service_info "$HANDLER_SERVICE_NAME"
         echo ""
         show_service_info "$SERVICE_NAME"
-
-        # Update AGENT_PROVIDER_URL (agent base URL) and MARKETPLACE_HANDLER_URL
-        # on the agent service so the AgentCard advertises the correct URLs.
-        # Note: AGENT_PROVIDER_ORGANIZATION_URL (JWT audience for DCR) is set
-        # in service.yaml and does NOT change per deployment — it's the
-        # provider's website (e.g., https://www.redhat.com).
-        service_url=$(gcloud run services describe "$SERVICE_NAME" \
-            --region="$REGION" \
-            --project="$PROJECT_ID" \
-            --format='value(status.url)' 2>/dev/null)
-        handler_url=$(gcloud run services describe "$HANDLER_SERVICE_NAME" \
-            --region="$REGION" \
-            --project="$PROJECT_ID" \
-            --format='value(status.url)' 2>/dev/null || echo "")
-
-        if [[ -n "$service_url" ]]; then
-            env_vars="AGENT_PROVIDER_URL=$service_url"
-            if [[ -n "$handler_url" ]]; then
-                env_vars="$env_vars,MARKETPLACE_HANDLER_URL=$handler_url"
-            else
-                log_warn "Could not retrieve $HANDLER_SERVICE_NAME URL. MARKETPLACE_HANDLER_URL not set."
-                log_warn "DCR endpoints in the AgentCard will fall back to AGENT_PROVIDER_URL."
-            fi
-            log_info "Updating agent env vars with service URLs"
-            gcloud run services update "$SERVICE_NAME" \
-                --region="$REGION" \
-                --project="$PROJECT_ID" \
-                --update-env-vars="$env_vars" \
-                --quiet 2>&1 | grep -v "Deploying\|Creating\|Routing" || true
-            log_info "Agent env vars updated successfully"
-        fi
+        update_agentcard_urls
 
         echo ""
         echo "Architecture:"
@@ -462,41 +726,69 @@ case "$DEPLOY_SERVICE" in
     agent)
         echo ""
         show_service_info "$SERVICE_NAME"
-
-        # Update AGENT_PROVIDER_URL (agent base URL) and MARKETPLACE_HANDLER_URL
-        # on the agent service. AGENT_PROVIDER_ORGANIZATION_URL is set in
-        # service.yaml and does NOT change per deployment.
-        service_url=$(gcloud run services describe "$SERVICE_NAME" \
-            --region="$REGION" \
-            --project="$PROJECT_ID" \
-            --format='value(status.url)' 2>/dev/null)
-        handler_url=$(gcloud run services describe "$HANDLER_SERVICE_NAME" \
-            --region="$REGION" \
-            --project="$PROJECT_ID" \
-            --format='value(status.url)' 2>/dev/null || echo "")
-
-        if [[ -n "$service_url" ]]; then
-            env_vars="AGENT_PROVIDER_URL=$service_url"
-            if [[ -n "$handler_url" ]]; then
-                env_vars="$env_vars,MARKETPLACE_HANDLER_URL=$handler_url"
-            else
-                log_warn "Could not retrieve $HANDLER_SERVICE_NAME URL. MARKETPLACE_HANDLER_URL not set."
-                log_warn "DCR endpoints in the AgentCard will fall back to AGENT_PROVIDER_URL."
-            fi
-            log_info "Updating agent env vars with service URLs"
-            gcloud run services update "$SERVICE_NAME" \
-                --region="$REGION" \
-                --project="$PROJECT_ID" \
-                --update-env-vars="$env_vars" \
-                --quiet 2>&1 | grep -v "Deploying\|Creating\|Routing" || true
-            log_info "Agent env vars updated successfully"
-        fi
+        update_agentcard_urls
 
         echo ""
         echo "Test the agent:"
-        echo "  curl \$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)')/.well-known/agent-card.json"
+        echo "  curl \$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)')/.well-known/agent.json"
+        ;;
+    lb)
+        update_agentcard_urls
         ;;
 esac
+
+# Show per-service load balancer info
+if [[ "$ENABLE_LB_AGENT" == "true" ]]; then
+    echo ""
+    log_info "=========================================="
+    log_info "Agent Load Balancer"
+    log_info "=========================================="
+
+    AGENT_LB_IP=$(gcloud compute addresses describe "${LB_NAME}-agent-ip" \
+        --global --project="$PROJECT_ID" \
+        --format='value(address)' 2>/dev/null || echo "unknown")
+
+    AGENT_CERT_STATUS=$(gcloud compute ssl-certificates describe "${LB_NAME}-agent-cert" \
+        --global --project="$PROJECT_ID" \
+        --format='value(managed.status)' 2>/dev/null || echo "unknown")
+
+    echo ""
+    echo "  URL:         https://$AGENT_DOMAIN_NAME"
+    echo "  Static IP:   $AGENT_LB_IP"
+    echo "  SSL status:  $AGENT_CERT_STATUS"
+    echo ""
+    if [[ "$AGENT_CERT_STATUS" != "ACTIVE" ]]; then
+        log_warn "SSL certificate is not yet active (status: $AGENT_CERT_STATUS)"
+        log_warn "Ensure DNS A record points $AGENT_DOMAIN_NAME → $AGENT_LB_IP"
+        log_warn "Provisioning can take up to 60 minutes after DNS propagation."
+    fi
+fi
+
+if [[ "$ENABLE_LB_HANDLER" == "true" ]]; then
+    echo ""
+    log_info "=========================================="
+    log_info "Handler Load Balancer"
+    log_info "=========================================="
+
+    HANDLER_LB_IP=$(gcloud compute addresses describe "${LB_NAME}-handler-ip" \
+        --global --project="$PROJECT_ID" \
+        --format='value(address)' 2>/dev/null || echo "unknown")
+
+    HANDLER_CERT_STATUS=$(gcloud compute ssl-certificates describe "${LB_NAME}-handler-cert" \
+        --global --project="$PROJECT_ID" \
+        --format='value(managed.status)' 2>/dev/null || echo "unknown")
+
+    echo ""
+    echo "  URL:         https://$HANDLER_DOMAIN_NAME"
+    echo "  Static IP:   $HANDLER_LB_IP"
+    echo "  SSL status:  $HANDLER_CERT_STATUS"
+    echo ""
+    if [[ "$HANDLER_CERT_STATUS" != "ACTIVE" ]]; then
+        log_warn "SSL certificate is not yet active (status: $HANDLER_CERT_STATUS)"
+        log_warn "Ensure DNS A record points $HANDLER_DOMAIN_NAME → $HANDLER_LB_IP"
+        log_warn "Provisioning can take up to 60 minutes after DNS propagation."
+    fi
+fi
 
 echo ""
 echo "View logs:"

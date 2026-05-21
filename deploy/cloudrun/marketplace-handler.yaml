@@ -27,7 +27,7 @@ metadata:
     component: provisioning
   annotations:
     run.googleapis.com/description: "Marketplace provisioning and DCR handler for Lightspeed Agent"
-    run.googleapis.com/ingress: all
+    run.googleapis.com/ingress: internal-and-cloud-load-balancing
     run.googleapis.com/launch-stage: GA
     run.googleapis.com/minScale: "1"
     run.googleapis.com/maxScale: "2"

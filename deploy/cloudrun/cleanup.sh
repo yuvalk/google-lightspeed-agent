@@ -53,6 +53,9 @@ PUBSUB_INVOKER_SA="${PUBSUB_INVOKER_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 PUBSUB_TOPIC="${PUBSUB_TOPIC:-marketplace-entitlements}"
 PUBSUB_SUBSCRIPTION="${PUBSUB_SUBSCRIPTION:-${PUBSUB_TOPIC}-sub}"
 
+# Load balancer resource name prefix (used by cleanup_service_lb)
+LB_NAME="${LB_NAME:-lightspeed-lb}"
+
 # Parse arguments
 FORCE=false
 
@@ -80,6 +83,8 @@ fi
 log_warn "This will delete the following resources from project: $PROJECT_ID"
 echo ""
 echo "  - Cloud Run services: $SERVICE_NAME, $HANDLER_SERVICE_NAME"
+echo "  - Load balancer resources (if any): forwarding rules, HTTPS proxies,"
+echo "    URL maps, SSL certs, backend services, NEGs, static IPs, Cloud Armor policies"
 echo "  - Pub/Sub topic: $PUBSUB_TOPIC"
 echo "  - Pub/Sub subscription: $PUBSUB_SUBSCRIPTION"
 echo "  - Secrets: redhat-sso-client-id, redhat-sso-client-secret, database-url,"
@@ -130,7 +135,34 @@ else
 fi
 
 # =============================================================================
-# Step 2: Delete Pub/Sub Resources
+# Step 2: Delete Load Balancer Resources (per-service)
+# =============================================================================
+# Delete all LB resources for a single service (reverse dependency order).
+# Uses try-delete: nonexistent resources are silently skipped.
+cleanup_service_lb() {
+    local service_label="$1"
+    local p="${LB_NAME}-${service_label}"
+
+    log_info "Cleaning up ${service_label} LB resources..."
+
+    gcloud compute forwarding-rules delete "${p}-forwarding-rule" --global --project="$PROJECT_ID" --quiet 2>/dev/null || true
+    gcloud compute target-https-proxies delete "${p}-https-proxy" --global --project="$PROJECT_ID" --quiet 2>/dev/null || true
+    gcloud compute url-maps delete "${p}-url-map" --global --project="$PROJECT_ID" --quiet 2>/dev/null || true
+    gcloud compute ssl-certificates delete "${p}-cert" --global --project="$PROJECT_ID" --quiet 2>/dev/null || true
+    # Detach Cloud Armor before deleting backend (may have been enabled without the flag)
+    gcloud compute backend-services update "${p}-backend" --security-policy="" --global --project="$PROJECT_ID" 2>/dev/null || true
+    gcloud compute security-policies delete "${p}-security-policy" --global --project="$PROJECT_ID" --quiet 2>/dev/null || true
+    gcloud compute backend-services delete "${p}-backend" --global --project="$PROJECT_ID" --quiet 2>/dev/null || true
+    gcloud compute network-endpoint-groups delete "${p}-neg" --region="$REGION" --project="$PROJECT_ID" --quiet 2>/dev/null || true
+    gcloud compute addresses delete "${p}-ip" --global --project="$PROJECT_ID" --quiet 2>/dev/null || true
+}
+
+log_info "Cleaning up load balancer resources (if any)..."
+cleanup_service_lb "agent"
+cleanup_service_lb "handler"
+
+# =============================================================================
+# Step 3: Delete Pub/Sub Resources
 # =============================================================================
 log_info "Deleting Pub/Sub resources..."
 
@@ -157,7 +189,7 @@ else
 fi
 
 # =============================================================================
-# Step 3: Delete Secrets
+# Step 4: Delete Secrets
 # =============================================================================
 log_info "Deleting secrets from Secret Manager..."
 
@@ -184,7 +216,7 @@ for secret in "${secrets[@]}"; do
 done
 
 # =============================================================================
-# Step 4: Remove IAM Bindings and Delete Service Account
+# Step 5: Remove IAM Bindings and Delete Service Account
 # =============================================================================
 log_info "Removing service account IAM bindings..."
 
@@ -265,6 +297,7 @@ log_info "=========================================="
 echo ""
 echo "The following resources have been removed:"
 echo "  - Cloud Run services ($SERVICE_NAME, $HANDLER_SERVICE_NAME)"
+echo "  - Load balancer resources (if any existed)"
 echo "  - Pub/Sub topic and subscription"
 echo "  - Secret Manager secrets"
 echo "  - Service accounts (runtime + Pub/Sub invoker) and IAM bindings"
