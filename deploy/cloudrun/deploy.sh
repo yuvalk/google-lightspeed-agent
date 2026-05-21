@@ -718,6 +718,35 @@ case "$DEPLOY_SERVICE" in
     handler)
         echo ""
         show_service_info "$HANDLER_SERVICE_NAME"
+
+        # When LB is enabled for the handler, the Cloud Run URL is no longer
+        # reachable externally — update the agent's MARKETPLACE_HANDLER_URL to
+        # point to the GCLB domain so the AgentCard advertises the right DCR URL.
+        handler_url=$(gcloud run services describe "$HANDLER_SERVICE_NAME" \
+            --region="$REGION" \
+            --project="$PROJECT_ID" \
+            --format='value(status.url)' 2>/dev/null || echo "")
+        if [[ "$ENABLE_LB_HANDLER" == "true" ]]; then
+            handler_url="https://$HANDLER_DOMAIN_NAME"
+        fi
+        if [[ -n "$handler_url" ]]; then
+            if gcloud run services describe "$SERVICE_NAME" \
+                --region="$REGION" --project="$PROJECT_ID" &>/dev/null; then
+                log_info "Updating agent MARKETPLACE_HANDLER_URL=$handler_url"
+                if gcloud run services update "$SERVICE_NAME" \
+                    --region="$REGION" \
+                    --project="$PROJECT_ID" \
+                    --update-env-vars="MARKETPLACE_HANDLER_URL=$handler_url" \
+                    --quiet 2>/dev/null; then
+                    log_info "Agent env vars updated successfully"
+                else
+                    log_warn "Could not update MARKETPLACE_HANDLER_URL. Set it manually on the agent service."
+                fi
+            else
+                log_warn "Agent service $SERVICE_NAME not found. Deploy the agent to set MARKETPLACE_HANDLER_URL."
+            fi
+        fi
+
         echo ""
         echo "The marketplace handler is ready to receive:"
         echo "  - Pub/Sub events from Google Cloud Marketplace"
