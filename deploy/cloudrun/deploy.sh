@@ -106,9 +106,10 @@ HANDLER_IMAGE="${HANDLER_IMAGE:-}"
 MCP_IMAGE="${MCP_IMAGE:-gcr.io/${PROJECT_ID}/red-hat-lightspeed-mcp:latest}"
 
 # Parse arguments
-DEPLOY_SERVICE="all"  # all, handler, agent
+DEPLOY_SERVICE="all"  # all, handler, agent, lb
 ALLOW_UNAUTH=false
 BUILD_IMAGE=false
+DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -136,13 +137,30 @@ while [[ $# -gt 0 ]]; do
             BUILD_IMAGE=true
             shift
             ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
         *)
             log_error "Unknown option: $1"
-            echo "Usage: $0 [--service all|handler|agent|lb] [--image IMAGE] [--handler-image IMAGE] [--mcp-image IMAGE] [--allow-unauthenticated] [--build]"
+            echo "Usage: $0 [--service all|handler|agent|lb] [--image IMAGE] [--handler-image IMAGE] [--mcp-image IMAGE] [--allow-unauthenticated] [--build] [--dry-run]"
             exit 1
             ;;
     esac
 done
+
+# Dry-run mode: intercept gcloud calls
+if [[ "$DRY_RUN" == "true" ]]; then
+    log_warn "DRY-RUN mode — no resources will be created or modified"
+    gcloud() {
+        local subargs="$*"
+        if [[ "$subargs" == *" describe "* || "$subargs" == *" list "* ]]; then
+            return 1
+        fi
+        echo "[DRY-RUN] gcloud $subargs"
+    }
+    export -f gcloud
+fi
 
 # Validate required variables
 if [[ -z "$PROJECT_ID" ]]; then
@@ -497,7 +515,7 @@ setup_service_lb() {
     # -------------------------------------------------------------------------
     # Create HTTPS proxy with managed SSL certificate
     # -------------------------------------------------------------------------
-    if ! gcloud compute ssl-certificates describe "$cert_name" \
+    if [[ "$DRY_RUN" != "true" ]] && ! gcloud compute ssl-certificates describe "$cert_name" \
         --global --project="$PROJECT_ID" &>/dev/null; then
         log_error "SSL certificate '$cert_name' does not exist. Run setup.sh first."
         return 1
@@ -542,6 +560,63 @@ setup_service_lb() {
         --quiet
     log_info "Cloud Run ingress updated for $cloud_run_service"
 }
+
+# Get and display service URLs based on what was deployed
+show_service_info() {
+    local service_name="$1"
+    local service_url
+
+    service_url=$(gcloud run services describe "$service_name" \
+        --region="$REGION" \
+        --project="$PROJECT_ID" \
+        --format='value(status.url)' 2>/dev/null || echo "")
+
+    if [[ -n "$service_url" ]]; then
+        log_info "$service_name URL: $service_url"
+        echo "  Test: curl $service_url/health"
+    else
+        log_warn "Could not retrieve $service_name URL"
+    fi
+}
+
+# Update AGENT_PROVIDER_URL and MARKETPLACE_HANDLER_URL on the agent service
+# so the AgentCard advertises the correct externally-reachable URLs.
+# When per-service LBs are enabled, uses GCLB domains instead of Cloud Run URLs.
+update_agentcard_urls() {
+    local service_url handler_url env_vars
+    service_url=$(gcloud run services describe "$SERVICE_NAME" \
+        --region="$REGION" --project="$PROJECT_ID" \
+        --format='value(status.url)' 2>/dev/null || echo "")
+    handler_url=$(gcloud run services describe "$HANDLER_SERVICE_NAME" \
+        --region="$REGION" --project="$PROJECT_ID" \
+        --format='value(status.url)' 2>/dev/null || echo "")
+
+    [[ "$ENABLE_LB_AGENT" == "true" ]] && service_url="https://$AGENT_DOMAIN_NAME"
+    [[ "$ENABLE_LB_HANDLER" == "true" ]] && handler_url="https://$HANDLER_DOMAIN_NAME"
+
+    [[ -z "$service_url" ]] && return
+
+    env_vars="AGENT_PROVIDER_URL=$service_url"
+    if [[ -n "$handler_url" ]]; then
+        env_vars="$env_vars,MARKETPLACE_HANDLER_URL=$handler_url"
+    else
+        log_warn "Could not retrieve $HANDLER_SERVICE_NAME URL. MARKETPLACE_HANDLER_URL not set."
+    fi
+
+    log_info "Updating agent env vars: $env_vars"
+    if gcloud run services update "$SERVICE_NAME" \
+        --region="$REGION" --project="$PROJECT_ID" \
+        --update-env-vars="$env_vars" --quiet 2>/dev/null; then
+        log_info "Agent env vars updated successfully"
+    else
+        log_warn "Could not update agent env vars. Set AGENT_PROVIDER_URL and MARKETPLACE_HANDLER_URL manually."
+    fi
+}
+
+# Allow sourcing for testing — skip main execution
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0 2>/dev/null || true
+fi
 
 # =============================================================================
 # Main deployment
@@ -612,7 +687,7 @@ case "$DEPLOY_SERVICE" in
     lb)
         log_info "Setting up load balancers only (no service redeploy)..."
         if [[ "$ENABLE_LB_HANDLER" == "true" ]]; then
-            if ! gcloud run services describe "$HANDLER_SERVICE_NAME" \
+            if [[ "$DRY_RUN" != "true" ]] && ! gcloud run services describe "$HANDLER_SERVICE_NAME" \
                 --region="$REGION" --project="$PROJECT_ID" &>/dev/null; then
                 log_error "$HANDLER_SERVICE_NAME does not exist. Deploy it first before setting up its LB."
                 exit 1
@@ -620,7 +695,7 @@ case "$DEPLOY_SERVICE" in
             setup_service_lb "handler" "$HANDLER_SERVICE_NAME" "$HANDLER_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_HANDLER"
         fi
         if [[ "$ENABLE_LB_AGENT" == "true" ]]; then
-            if ! gcloud run services describe "$SERVICE_NAME" \
+            if [[ "$DRY_RUN" != "true" ]] && ! gcloud run services describe "$SERVICE_NAME" \
                 --region="$REGION" --project="$PROJECT_ID" &>/dev/null; then
                 log_error "$SERVICE_NAME does not exist. Deploy it first before setting up its LB."
                 exit 1
@@ -644,58 +719,6 @@ esac
 
 log_info "Deployment complete!"
 echo ""
-
-# Get and display service URLs based on what was deployed
-show_service_info() {
-    local service_name="$1"
-    local service_url
-
-    service_url=$(gcloud run services describe "$service_name" \
-        --region="$REGION" \
-        --project="$PROJECT_ID" \
-        --format='value(status.url)' 2>/dev/null || echo "")
-
-    if [[ -n "$service_url" ]]; then
-        log_info "$service_name URL: $service_url"
-        echo "  Test: curl $service_url/health"
-    else
-        log_warn "Could not retrieve $service_name URL"
-    fi
-}
-
-# Update AGENT_PROVIDER_URL and MARKETPLACE_HANDLER_URL on the agent service
-# so the AgentCard advertises the correct externally-reachable URLs.
-# When per-service LBs are enabled, uses GCLB domains instead of Cloud Run URLs.
-update_agentcard_urls() {
-    local service_url handler_url env_vars
-    service_url=$(gcloud run services describe "$SERVICE_NAME" \
-        --region="$REGION" --project="$PROJECT_ID" \
-        --format='value(status.url)' 2>/dev/null || echo "")
-    handler_url=$(gcloud run services describe "$HANDLER_SERVICE_NAME" \
-        --region="$REGION" --project="$PROJECT_ID" \
-        --format='value(status.url)' 2>/dev/null || echo "")
-
-    [[ "$ENABLE_LB_AGENT" == "true" ]] && service_url="https://$AGENT_DOMAIN_NAME"
-    [[ "$ENABLE_LB_HANDLER" == "true" ]] && handler_url="https://$HANDLER_DOMAIN_NAME"
-
-    [[ -z "$service_url" ]] && return
-
-    env_vars="AGENT_PROVIDER_URL=$service_url"
-    if [[ -n "$handler_url" ]]; then
-        env_vars="$env_vars,MARKETPLACE_HANDLER_URL=$handler_url"
-    else
-        log_warn "Could not retrieve $HANDLER_SERVICE_NAME URL. MARKETPLACE_HANDLER_URL not set."
-    fi
-
-    log_info "Updating agent env vars: $env_vars"
-    if gcloud run services update "$SERVICE_NAME" \
-        --region="$REGION" --project="$PROJECT_ID" \
-        --update-env-vars="$env_vars" --quiet 2>/dev/null; then
-        log_info "Agent env vars updated successfully"
-    else
-        log_warn "Could not update agent env vars. Set AGENT_PROVIDER_URL and MARKETPLACE_HANDLER_URL manually."
-    fi
-}
 
 # Show info for deployed services
 case "$DEPLOY_SERVICE" in
