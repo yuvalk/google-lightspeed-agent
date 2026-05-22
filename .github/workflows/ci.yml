@@ -155,6 +155,23 @@ jobs:
       - name: Run tests
         run: python3.12 -m pytest tests/ -v
 
+  test-shell:
+    name: Shell tests
+    needs: [konflux-verify, lock-file-check]
+    if: >-
+      !cancelled() &&
+      (needs.konflux-verify.result == 'success' || needs.konflux-verify.result == 'skipped') &&
+      needs.lock-file-check.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bats
+        run: sudo apt-get update && sudo apt-get install -y bats
+
+      - name: Run shell tests
+        run: bats tests/shell/
+
   build:
     name: Build container image
     needs: [konflux-verify, lock-file-check]
@@ -172,7 +189,7 @@ jobs:
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [konflux-verify, lock-file-check, lint, test, build]
+    needs: [konflux-verify, lock-file-check, lint, test, test-shell, build]
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs passed
@@ -184,6 +201,7 @@ jobs:
           fi
           if [[ "${{ needs.lint.result }}" != "success" || \
                 "${{ needs.test.result }}" != "success" || \
+                "${{ needs.test-shell.result }}" != "success" || \
                 "${{ needs.build.result }}" != "success" || \
                 "${{ needs.lock-file-check.result }}" != "success" ]]; then
             echo "One or more CI jobs failed or were cancelled."
@@ -191,6 +209,7 @@ jobs:
             echo "  lock-file-check: ${{ needs.lock-file-check.result }}"
             echo "  lint:            ${{ needs.lint.result }}"
             echo "  test:            ${{ needs.test.result }}"
+            echo "  test-shell:      ${{ needs.test-shell.result }}"
             echo "  build:           ${{ needs.build.result }}"
             exit 1
           fi

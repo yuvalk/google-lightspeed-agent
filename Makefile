@@ -50,6 +50,10 @@ test:
 	@echo "Running tests..."
 	source .venv/bin/activate && python -m pytest tests/ -v
 
+test-shell:
+	@echo "Running shell tests..."
+	npx bats tests/shell/
+
 lint:
 	@echo "Running linter..."
 	source .venv/bin/activate && ruff check src/ tests/
