@@ -485,6 +485,7 @@ setup_service_lb() {
 
         # Add preconfigured WAF rules (OWASP ModSecurity CRS)
         declare -A WAF_RULES=(
+            [900]="methodenforcement-v422-stable"
             [1000]="sqli-v422-stable"
             [1100]="xss-v422-stable"
             [1200]="lfi-v422-stable"
@@ -493,9 +494,10 @@ setup_service_lb() {
             [1500]="scannerdetection-v422-stable"
             [1600]="protocolattack-v422-stable"
             [1700]="sessionfixation-v422-stable"
+            [1800]="cve-canary"
         )
 
-        local -a WAF_PRIORITIES=(1000 1100 1200 1300 1400 1500 1600 1700)
+        local -a WAF_PRIORITIES=(900 1000 1100 1200 1300 1400 1500 1600 1700 1800)
         for priority in "${WAF_PRIORITIES[@]}"; do
             local waf_rule_name="${WAF_RULES[$priority]}"
             if ! gcloud compute security-policies rules describe "$priority" \
