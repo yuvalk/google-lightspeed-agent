@@ -152,6 +152,11 @@ cleanup_service_lb() {
     # Detach Cloud Armor before deleting backend (may have been enabled without the flag)
     gcloud compute backend-services update "${p}-backend" --security-policy="" --global --project="$PROJECT_ID" 2>/dev/null || true
     gcloud compute security-policies delete "${p}-security-policy" --global --project="$PROJECT_ID" --quiet 2>/dev/null || true
+    # Remove NEG from backend service before deleting either resource
+    gcloud compute backend-services remove-backend "${p}-backend" \
+        --global --project="$PROJECT_ID" \
+        --network-endpoint-group="${p}-neg" \
+        --network-endpoint-group-region="$REGION" 2>/dev/null || true
     gcloud compute backend-services delete "${p}-backend" --global --project="$PROJECT_ID" --quiet 2>/dev/null || true
     gcloud compute network-endpoint-groups delete "${p}-neg" --region="$REGION" --project="$PROJECT_ID" --quiet 2>/dev/null || true
     gcloud compute addresses delete "${p}-ip" --global --project="$PROJECT_ID" --quiet 2>/dev/null || true

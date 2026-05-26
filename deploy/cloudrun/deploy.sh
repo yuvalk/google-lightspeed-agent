@@ -156,6 +156,14 @@ if [[ "$DRY_RUN" == "true" ]]; then
     log_warn "DRY-RUN mode — no resources will be created or modified"
     gcloud() {
         local subargs="$*"
+        # Return mock data for informational queries used by status display
+        if [[ "$subargs" == *"addresses describe"*"--format"*"address"* ]]; then
+            echo "203.0.113.1"; return 0
+        fi
+        if [[ "$subargs" == *"ssl-certificates describe"*"--format"*"managed.status"* ]]; then
+            echo "DRY-RUN"; return 0
+        fi
+        # Existence checks: return 1 ("not found") to trigger resource creation
         if [[ "$subargs" == *" describe "* || "$subargs" == *" list "* ]]; then
             return 1
         fi

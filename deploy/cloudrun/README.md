@@ -303,6 +303,41 @@ Each security policy includes the following OWASP ModSecurity CRS rules, each co
 
 All rules use `evaluatePreconfiguredWaf()` with configurable sensitivity levels (1-4). The agent defaults to sensitivity 1 (`CLOUD_ARMOR_SENSITIVITY_AGENT`) because its A2A payloads contain free-form user text that can trigger false positives at higher sensitivities. The handler defaults to sensitivity 2 (`CLOUD_ARMOR_SENSITIVITY_HANDLER`) because it only receives structured DCR JSON from Gemini Enterprise. JSON parsing is enabled on each security policy (`--json-parsing=STANDARD`) for accurate inspection of JSON-RPC and DCR request bodies. Request body inspection is set to 64kB (`--request-body-inspection-size=64kB`), the maximum, to cover large A2A conversation payloads. Verbose logging is enabled (`--log-level=VERBOSE`) for detailed visibility into WAF decisions, useful for debugging false positives and tuning rules.
 
+#### Preview Mode (Recommended for Initial Deployment)
+
+Cloud Armor rules are deployed in **enforce mode** (`deny-403`) by default — matching requests are blocked immediately. [Google recommends](https://docs.cloud.google.com/armor/docs/best-practices) deploying WAF rules in **preview mode** first to observe what they would block without actually blocking traffic, then switching to enforce mode after tuning.
+
+This is especially important for the **agent service**, where free-form A2A JSON-RPC payloads may contain SQL-like text, HTML fragments, or code snippets that trigger false positives on SQLi (`sqli`) or XSS (`xss`) rules. False positives from Cloud Armor are silent from the application's perspective — blocked requests never reach the app and produce no application-level logs, only Cloud Armor logs in Cloud Logging.
+
+To switch individual rules to preview mode after deployment:
+
+```bash
+# Put the SQLi rule into preview mode on the agent policy (log only, do not block)
+gcloud compute security-policies rules update 1000 \
+  --security-policy="${LB_NAME:-lightspeed-lb}-agent-security-policy" \
+  --action=deny-403 \
+  --preview \
+  --global --project=$GOOGLE_CLOUD_PROJECT
+```
+
+To re-enable enforcement after tuning:
+
+```bash
+gcloud compute security-policies rules update 1000 \
+  --security-policy="${LB_NAME:-lightspeed-lb}-agent-security-policy" \
+  --action=deny-403 \
+  --no-preview \
+  --global --project=$GOOGLE_CLOUD_PROJECT
+```
+
+**Recommended rollout procedure:**
+
+1. Deploy with rules in enforce mode (the default)
+2. Immediately switch agent SQLi and XSS rules (priorities 1000, 1100) to preview mode
+3. Monitor Cloud Armor logs for false positives (see [Viewing Blocked Requests](#viewing-blocked-requests))
+4. After 24–48 hours with no false positives, re-enable enforcement with `--no-preview`
+5. Repeat for any other rules that show false positive activity
+
 #### Checking Policy Status
 
 ```bash
