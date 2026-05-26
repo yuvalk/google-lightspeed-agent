@@ -81,6 +81,8 @@ ENABLE_LB_AGENT="${ENABLE_LB_AGENT:-false}"
 ENABLE_LB_HANDLER="${ENABLE_LB_HANDLER:-false}"
 ENABLE_CLOUD_ARMOR_AGENT="${ENABLE_CLOUD_ARMOR_AGENT:-false}"
 ENABLE_CLOUD_ARMOR_HANDLER="${ENABLE_CLOUD_ARMOR_HANDLER:-false}"
+CLOUD_ARMOR_SENSITIVITY_AGENT="${CLOUD_ARMOR_SENSITIVITY_AGENT:-1}"
+CLOUD_ARMOR_SENSITIVITY_HANDLER="${CLOUD_ARMOR_SENSITIVITY_HANDLER:-2}"
 AGENT_DOMAIN_NAME="${AGENT_DOMAIN_NAME:-}"
 HANDLER_DOMAIN_NAME="${HANDLER_DOMAIN_NAME:-}"
 LB_NAME="${LB_NAME:-lightspeed-lb}"
@@ -391,16 +393,18 @@ configure_pubsub_push() {
 # Configure per-service Google Cloud Load Balancer
 # =============================================================================
 # Creates an independent GCLB for a single Cloud Run service.
-# Usage: setup_service_lb <service_label> <cloud_run_service> <domain_name> <cloud_armor_enabled>
+# Usage: setup_service_lb <service_label> <cloud_run_service> <domain_name> <cloud_armor_enabled> <waf_sensitivity>
 #   service_label:      "agent" or "handler" (used in resource naming)
 #   cloud_run_service:  Cloud Run service name to front with the LB
 #   domain_name:        Domain for the Google-managed SSL certificate
 #   cloud_armor_enabled: "true" to create and attach a Cloud Armor WAF policy
+#   waf_sensitivity:    OWASP CRS sensitivity level (1-4, default 1)
 setup_service_lb() {
     local service_label="$1"
     local cloud_run_service="$2"
     local domain_name="$3"
     local cloud_armor_enabled="$4"
+    local waf_sensitivity="${5:-1}"
 
     local neg_name="${LB_NAME}-${service_label}-neg"
     local backend_name="${LB_NAME}-${service_label}-backend"
@@ -462,26 +466,36 @@ setup_service_lb() {
             log_info "Security policy '$policy_name' already exists"
         fi
 
+        # Enable JSON parsing for JSON-RPC/DCR request bodies and verbose logging
+        gcloud compute security-policies update "$policy_name" \
+            --json-parsing=STANDARD \
+            --request-body-inspection-size=64kB \
+            --log-level=VERBOSE \
+            --global \
+            --project="$PROJECT_ID"
+        log_info "Security policy '$policy_name' configured: JSON parsing, 64kB body inspection, verbose logging"
+
         # Add preconfigured WAF rules (OWASP ModSecurity CRS)
         declare -A WAF_RULES=(
-            [1000]="sqli-v33-stable"
-            [1100]="xss-v33-stable"
-            [1200]="lfi-v33-stable"
-            [1300]="rfi-v33-stable"
-            [1400]="rce-v33-stable"
-            [1500]="scannerdetection-v33-stable"
-            [1600]="protocolattack-v33-stable"
-            [1700]="sessionfixation-v33-stable"
+            [1000]="sqli-v422-stable"
+            [1100]="xss-v422-stable"
+            [1200]="lfi-v422-stable"
+            [1300]="rfi-v422-stable"
+            [1400]="rce-v422-stable"
+            [1500]="scannerdetection-v422-stable"
+            [1600]="protocolattack-v422-stable"
+            [1700]="sessionfixation-v422-stable"
         )
 
-        for priority in $(echo "${!WAF_RULES[@]}" | tr ' ' '\n' | sort -n); do
+        local -a WAF_PRIORITIES=(1000 1100 1200 1300 1400 1500 1600 1700)
+        for priority in "${WAF_PRIORITIES[@]}"; do
             local waf_rule_name="${WAF_RULES[$priority]}"
             if ! gcloud compute security-policies rules describe "$priority" \
                 --security-policy="$policy_name" \
                 --global --project="$PROJECT_ID" &>/dev/null; then
                 gcloud compute security-policies rules create "$priority" \
                     --security-policy="$policy_name" \
-                    --expression="evaluatePreconfiguredExpr('${waf_rule_name}')" \
+                    --expression="evaluatePreconfiguredWaf('${waf_rule_name}', {'sensitivity': ${waf_sensitivity}})" \
                     --action=deny-403 \
                     --global \
                     --project="$PROJECT_ID"
@@ -645,7 +659,7 @@ case "$DEPLOY_SERVICE" in
         configure_pubsub_push
         deploy_agent
         if [[ "$ENABLE_LB_HANDLER" == "true" ]]; then
-            setup_service_lb "handler" "$HANDLER_SERVICE_NAME" "$HANDLER_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_HANDLER"
+            setup_service_lb "handler" "$HANDLER_SERVICE_NAME" "$HANDLER_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_HANDLER" "$CLOUD_ARMOR_SENSITIVITY_HANDLER"
         else
             log_info "No LB for handler — setting ingress to all..."
             gcloud run services update "$HANDLER_SERVICE_NAME" \
@@ -653,7 +667,7 @@ case "$DEPLOY_SERVICE" in
                 --ingress=all --quiet
         fi
         if [[ "$ENABLE_LB_AGENT" == "true" ]]; then
-            setup_service_lb "agent" "$SERVICE_NAME" "$AGENT_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_AGENT"
+            setup_service_lb "agent" "$SERVICE_NAME" "$AGENT_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_AGENT" "$CLOUD_ARMOR_SENSITIVITY_AGENT"
         else
             log_info "No LB for agent — setting ingress to all..."
             gcloud run services update "$SERVICE_NAME" \
@@ -665,7 +679,7 @@ case "$DEPLOY_SERVICE" in
         deploy_handler
         configure_pubsub_push
         if [[ "$ENABLE_LB_HANDLER" == "true" ]]; then
-            setup_service_lb "handler" "$HANDLER_SERVICE_NAME" "$HANDLER_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_HANDLER"
+            setup_service_lb "handler" "$HANDLER_SERVICE_NAME" "$HANDLER_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_HANDLER" "$CLOUD_ARMOR_SENSITIVITY_HANDLER"
         else
             log_info "No LB for handler — setting ingress to all..."
             gcloud run services update "$HANDLER_SERVICE_NAME" \
@@ -676,7 +690,7 @@ case "$DEPLOY_SERVICE" in
     agent)
         deploy_agent
         if [[ "$ENABLE_LB_AGENT" == "true" ]]; then
-            setup_service_lb "agent" "$SERVICE_NAME" "$AGENT_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_AGENT"
+            setup_service_lb "agent" "$SERVICE_NAME" "$AGENT_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_AGENT" "$CLOUD_ARMOR_SENSITIVITY_AGENT"
         else
             log_info "No LB for agent — setting ingress to all..."
             gcloud run services update "$SERVICE_NAME" \
@@ -692,7 +706,7 @@ case "$DEPLOY_SERVICE" in
                 log_error "$HANDLER_SERVICE_NAME does not exist. Deploy it first before setting up its LB."
                 exit 1
             fi
-            setup_service_lb "handler" "$HANDLER_SERVICE_NAME" "$HANDLER_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_HANDLER"
+            setup_service_lb "handler" "$HANDLER_SERVICE_NAME" "$HANDLER_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_HANDLER" "$CLOUD_ARMOR_SENSITIVITY_HANDLER"
         fi
         if [[ "$ENABLE_LB_AGENT" == "true" ]]; then
             if [[ "$DRY_RUN" != "true" ]] && ! gcloud run services describe "$SERVICE_NAME" \
@@ -700,7 +714,7 @@ case "$DEPLOY_SERVICE" in
                 log_error "$SERVICE_NAME does not exist. Deploy it first before setting up its LB."
                 exit 1
             fi
-            setup_service_lb "agent" "$SERVICE_NAME" "$AGENT_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_AGENT"
+            setup_service_lb "agent" "$SERVICE_NAME" "$AGENT_DOMAIN_NAME" "$ENABLE_CLOUD_ARMOR_AGENT" "$CLOUD_ARMOR_SENSITIVITY_AGENT"
         fi
         if [[ "$ENABLE_LB_AGENT" != "true" && "$ENABLE_LB_HANDLER" != "true" ]]; then
             log_warn "No load balancers enabled. Set ENABLE_LB_AGENT=true and/or ENABLE_LB_HANDLER=true."

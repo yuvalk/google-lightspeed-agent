@@ -197,6 +197,8 @@ Each enabled LB creates the following resources (all prefixed with `LB_NAME` and
 | `HANDLER_DOMAIN_NAME` | (required when handler LB enabled) | Domain for the handler's Google-managed SSL certificate (e.g., `dcr.example.com`) |
 | `ENABLE_CLOUD_ARMOR_AGENT` | `false` | Enable Cloud Armor WAF for the agent LB (requires `ENABLE_LB_AGENT=true`) |
 | `ENABLE_CLOUD_ARMOR_HANDLER` | `false` | Enable Cloud Armor WAF for the handler LB (requires `ENABLE_LB_HANDLER=true`) |
+| `CLOUD_ARMOR_SENSITIVITY_AGENT` | `1` | OWASP CRS sensitivity level for the agent WAF policy (1-4). Level 1 is recommended for the agent because its A2A payloads contain free-form user text that can trigger false positives at higher sensitivities. |
+| `CLOUD_ARMOR_SENSITIVITY_HANDLER` | `2` | OWASP CRS sensitivity level for the handler WAF policy (1-4). Level 2 is suitable because the handler only receives structured DCR JSON from Gemini Enterprise. |
 | `LB_NAME` | `lightspeed-lb` | Prefix for all load balancer resource names |
 
 ### DNS Setup
@@ -290,14 +292,16 @@ Each security policy includes the following OWASP ModSecurity CRS rules, each co
 
 | Priority | Rule | OWASP Category | What It Blocks |
 |----------|------|----------------|----------------|
-| 1000 | `sqli-v33-stable` | A03:2021 Injection | SQL injection attempts in query parameters, headers, and request body. Detects patterns like `' OR 1=1`, `UNION SELECT`, and encoded variants. |
-| 1100 | `xss-v33-stable` | A03:2021 Injection | Cross-site scripting via `<script>` tags, event handlers (`onerror`, `onload`), and JavaScript URIs in request parameters and headers. |
-| 1200 | `lfi-v33-stable` | A01:2021 Broken Access Control | Local file inclusion via path traversal (`../../etc/passwd`, `..%2f..%2f`). Prevents attackers from reading files on the server filesystem. |
-| 1300 | `rfi-v33-stable` | A01:2021 Broken Access Control | Remote file inclusion via URL parameters pointing to external resources (`http://evil.com/shell.php`). Blocks attempts to load and execute remote code. |
-| 1400 | `rce-v33-stable` | A03:2021 Injection | OS command injection attempts (`; rm -rf /`, backtick execution, pipe chains). Prevents arbitrary command execution on the server. |
-| 1500 | `scannerdetection-v33-stable` | Reconnaissance | Detects and blocks automated vulnerability scanners, web crawlers, and attack tools by matching known scanner signatures in User-Agent headers and request patterns. |
-| 1600 | `protocolattack-v33-stable` | A05:2021 Security Misconfiguration | HTTP request smuggling, response splitting (`\r\n` injection), and protocol-level attacks that exploit differences between proxy and backend HTTP parsing. |
-| 1700 | `sessionfixation-v33-stable` | A07:2021 Identification and Authentication Failures | Session fixation attacks where an attacker sets a known session ID via URL parameters or cookies, then waits for the victim to authenticate with that session. |
+| 1000 | `sqli-v422-stable` | A03:2021 Injection | SQL injection attempts in query parameters, headers, and request body. Detects patterns like `' OR 1=1`, `UNION SELECT`, and encoded variants. |
+| 1100 | `xss-v422-stable` | A03:2021 Injection | Cross-site scripting via `<script>` tags, event handlers (`onerror`, `onload`), and JavaScript URIs in request parameters and headers. |
+| 1200 | `lfi-v422-stable` | A01:2021 Broken Access Control | Local file inclusion via path traversal (`../../etc/passwd`, `..%2f..%2f`). Prevents attackers from reading files on the server filesystem. |
+| 1300 | `rfi-v422-stable` | A01:2021 Broken Access Control | Remote file inclusion via URL parameters pointing to external resources (`http://evil.com/shell.php`). Blocks attempts to load and execute remote code. |
+| 1400 | `rce-v422-stable` | A03:2021 Injection | OS command injection attempts (`; rm -rf /`, backtick execution, pipe chains). Prevents arbitrary command execution on the server. |
+| 1500 | `scannerdetection-v422-stable` | Reconnaissance | Detects and blocks automated vulnerability scanners, web crawlers, and attack tools by matching known scanner signatures in User-Agent headers and request patterns. |
+| 1600 | `protocolattack-v422-stable` | A05:2021 Security Misconfiguration | HTTP request smuggling, response splitting (`\r\n` injection), and protocol-level attacks that exploit differences between proxy and backend HTTP parsing. |
+| 1700 | `sessionfixation-v422-stable` | A07:2021 Identification and Authentication Failures | Session fixation attacks where an attacker sets a known session ID via URL parameters or cookies, then waits for the victim to authenticate with that session. |
+
+All rules use `evaluatePreconfiguredWaf()` with configurable sensitivity levels (1-4). The agent defaults to sensitivity 1 (`CLOUD_ARMOR_SENSITIVITY_AGENT`) because its A2A payloads contain free-form user text that can trigger false positives at higher sensitivities. The handler defaults to sensitivity 2 (`CLOUD_ARMOR_SENSITIVITY_HANDLER`) because it only receives structured DCR JSON from Gemini Enterprise. JSON parsing is enabled on each security policy (`--json-parsing=STANDARD`) for accurate inspection of JSON-RPC and DCR request bodies. Request body inspection is set to 64kB (`--request-body-inspection-size=64kB`), the maximum, to cover large A2A conversation payloads. Verbose logging is enabled (`--log-level=VERBOSE`) for detailed visibility into WAF decisions, useful for debugging false positives and tuning rules.
 
 #### Checking Policy Status
 
