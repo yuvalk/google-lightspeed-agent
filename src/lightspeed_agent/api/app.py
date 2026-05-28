@@ -9,10 +9,12 @@ marketplace-handler service. See lightspeed_agent.marketplace.
 """
 
 import logging
+import os
 import pathlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import urlparse
 
 from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPI
 from fastapi import Request
@@ -28,8 +30,45 @@ from lightspeed_agent.ratelimit import RateLimitMiddleware, get_redis_rate_limit
 from lightspeed_agent.security import RequestBodyLimitMiddleware, SecurityHeadersMiddleware
 
 _LOGO_PATH = pathlib.Path(__file__).parent.parent / "static" / "logo.png"
+_LOCALHOST_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 logger = logging.getLogger(__name__)
+
+
+def _check_mcp_url_security(settings: Any) -> None:
+    """Check MCP server URL for insecure HTTP on non-localhost hosts.
+
+    Raises ValueError in production (Cloud Run); logs a warning in dev.
+    Skipped for stdio transport mode since mcp_server_url is unused.
+    """
+    if settings.mcp_transport_mode not in ("http", "sse"):
+        return
+
+    url = settings.mcp_server_url
+    if not url:
+        return
+
+    parsed = urlparse(url)
+    if parsed.scheme.lower() == "https":
+        return
+
+    host = parsed.hostname or ""
+    if host in _LOCALHOST_HOSTS:
+        return
+
+    if os.getenv("K_SERVICE"):
+        raise ValueError(
+            f"MCP_SERVER_URL uses unencrypted HTTP for non-localhost host '{host}'. "
+            "Bearer tokens would be transmitted in cleartext. "
+            f"Use 'https://' for production deployments (K_SERVICE={os.getenv('K_SERVICE')})."
+        )
+
+    logger.warning(
+        "MCP_SERVER_URL uses unencrypted HTTP for non-localhost host '%s'. "
+        "Bearer tokens will be transmitted in cleartext. "
+        "Use 'https://' for production deployments.",
+        host,
+    )
 
 
 def _agent_card_response(request: Request) -> dict[str, Any]:
@@ -43,6 +82,9 @@ def _agent_card_response(request: Request) -> dict[str, Any]:
 async def lifespan(app: A2AFastAPI) -> AsyncIterator[None]:
     """Application lifespan manager for startup/shutdown events."""
     settings = get_settings()
+
+    # Startup: Validate MCP URL security (agent-specific, not in shared Settings)
+    _check_mcp_url_security(settings)
 
     # Startup: Verify Redis connectivity for rate limiting
     try:
