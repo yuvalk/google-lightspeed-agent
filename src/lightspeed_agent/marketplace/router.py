@@ -8,6 +8,7 @@ Pub/Sub push messages are authenticated by verifying the Google-signed OIDC toke
 in the Authorization header before processing any event.
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -15,6 +16,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+from google.auth import exceptions as google_auth_exceptions
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 
@@ -24,6 +26,8 @@ from lightspeed_agent.marketplace.models import ProcurementEvent, ProcurementEve
 from lightspeed_agent.marketplace.service import get_procurement_service
 
 logger = logging.getLogger(__name__)
+
+_google_auth_request = google_requests.Request()
 
 router = APIRouter(tags=["Marketplace Handler"])
 
@@ -77,12 +81,13 @@ async def pubsub_handler(request: Request) -> JSONResponse:
 
     try:
         audience = settings.pubsub_audience or None
-        google_id_token.verify_oauth2_token(  # type: ignore[no-untyped-call]
+        await asyncio.to_thread(
+            google_id_token.verify_oauth2_token,  # type: ignore[no-untyped-call]
             token,
-            google_requests.Request(),
+            _google_auth_request,
             audience=audience,
         )
-    except ValueError as e:
+    except (ValueError, google_auth_exceptions.GoogleAuthError) as e:
         logger.warning("Pub/Sub OIDC token verification failed: %s", e)
         raise HTTPException(
             status_code=401,

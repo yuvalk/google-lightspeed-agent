@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from google.auth import exceptions as google_auth_exceptions
 
 from lightspeed_agent.auth.middleware import AuthenticationMiddleware
 
@@ -67,6 +68,17 @@ class TestPubSubOIDCVerification:
             "/pubsub",
             json=_pubsub_body(),
             headers={"Authorization": "Bearer bad-token"},
+        )
+        assert resp.status_code == 401
+
+    @patch("lightspeed_agent.marketplace.router.google_id_token.verify_oauth2_token")
+    def test_pubsub_rejects_wrong_issuer_token(self, mock_verify, marketplace_client):
+        """POST /pubsub with wrong-issuer OIDC token returns 401."""
+        mock_verify.side_effect = google_auth_exceptions.GoogleAuthError("Wrong issuer")
+        resp = marketplace_client.post(
+            "/pubsub",
+            json=_pubsub_body(),
+            headers={"Authorization": "Bearer wrong-issuer-token"},
         )
         assert resp.status_code == 401
 
