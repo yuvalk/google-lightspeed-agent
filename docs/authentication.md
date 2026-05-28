@@ -25,14 +25,16 @@ Clients obtain access tokens directly from Red Hat SSO using their DCR-issued cr
 |            Marketplace Handler (8001)                  |                  |
 |                                                        |                  |
 |  +---------------------------------------------------+ |                  |
-|  |             Hybrid /dcr Endpoint                  | |                  |
+|  |  POST /pubsub            POST /dcr                | |                  |
+|  |  (Google OIDC verified)  (DCR requests)            | |                  |
 |  |                                                   | |                  |
 |  |  Pub/Sub path:         DCR path:                  | |                  |
-|  |  - Decode msg          - Validate Google JWT  [3] | |                  |
-|  |  - Filter by product   - Verify order in DB       | |                  |
-|  |  - Approve entitlement - Create OAuth client  [4] | |                  |
-|  |    via Procurement API - Return client_id +       | |                  |
-|  |  - Store entitlement     client_secret            | |                  |
+|  |  - Verify OIDC token   - Validate Google JWT  [3] | |                  |
+|  |  - Decode msg          - Verify order in DB       | |                  |
+|  |  - Filter by product   - Create OAuth client  [4] | |                  |
+|  |  - Approve entitlement - Return client_id +       | |                  |
+|  |    via Procurement API   client_secret             | |                  |
+|  |  - Store entitlement                              | |                  |
 |  +---+--------------------+----------+---------------+ |                  |
 |      |                    |          |                 |                  |
 |      v                    |          v                 |                  |

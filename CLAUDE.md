@@ -84,7 +84,7 @@ The system runs as two separate FastAPI services with separate concerns:
 
 1. **Lightspeed Agent** (port 8000, `src/lightspeed_agent/main.py`) — The AI agent service. Scales to zero on Cloud Run. Handles A2A protocol requests (JSON-RPC 2.0 at `/`), serves the AgentCard at `/.well-known/agent.json`. Uses ADK `LlmAgent` with MCP tools loaded from the sidecar.
 
-2. **Marketplace Handler** (port 8001, `src/lightspeed_agent/marketplace/app.py`) — Always-on service for Google Cloud Marketplace Pub/Sub provisioning events and Dynamic Client Registration (DCR). Has a single hybrid `/dcr` endpoint that routes Pub/Sub messages vs DCR requests based on request content.
+2. **Marketplace Handler** (port 8001, `src/lightspeed_agent/marketplace/app.py`) — Always-on service for Google Cloud Marketplace Pub/Sub provisioning events and Dynamic Client Registration (DCR). Has separate `/dcr` (DCR requests) and `/pubsub` (Pub/Sub events with Google OIDC verification) endpoints.
 
 ### Database Isolation
 
@@ -124,7 +124,7 @@ Creates OAuth tenant clients in Red Hat SSO via the GMA API (`dcr/gma_client.py`
 
 ### Entitlement Provisioning Lifecycle
 
-Google Cloud Marketplace sends Pub/Sub events to the `/dcr` endpoint as orders progress through their lifecycle. The `ProcurementService` (`marketplace/service.py`) processes each event type:
+Google Cloud Marketplace sends Pub/Sub events to the `/pubsub` endpoint as orders progress through their lifecycle. The `ProcurementService` (`marketplace/service.py`) processes each event type:
 
 1. **`ENTITLEMENT_CREATION_REQUESTED`** — Customer initiates an order. The handler:
    - Creates a local entitlement record in `PENDING_APPROVAL` state

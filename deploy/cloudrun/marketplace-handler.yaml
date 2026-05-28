@@ -146,6 +146,11 @@ spec:
             # Probe server port (health/readiness checks on separate port)
             - name: HANDLER_PROBE_PORT
               value: "8003"
+            # Google Cloud Pub/Sub OIDC audience verification
+            # Set to the marketplace handler's URL for strict token binding.
+            # If empty, tokens are verified for signature/expiry but not audience.
+            - name: PUBSUB_AUDIENCE
+              value: ""
           volumeMounts:
             - name: redis-ca-cert
               mountPath: /secrets/redis-ca-cert

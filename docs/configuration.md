@@ -219,6 +219,12 @@ RATE_LIMIT_REQUESTS_PER_HOUR=2000
 
 See [Rate Limiting](rate-limiting.md) for details on the sliding window algorithm.
 
+### Google Cloud Pub/Sub
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PUBSUB_AUDIENCE` | *(empty)* | Expected audience in Google Cloud Pub/Sub OIDC tokens. Set to the marketplace handler's URL for strict token binding. If empty, tokens are verified for signature/expiry but not audience. |
+
 ### Google Cloud Service Control
 
 | Variable | Default | Description |

@@ -4,8 +4,9 @@ This is a separate service from the Agent that handles:
 1. Pub/Sub events from Google Cloud Marketplace (async provisioning)
 2. DCR requests from Gemini Enterprise (sync client registration)
 
-The service exposes a single /dcr endpoint that handles both flows
-using smart routing based on request content.
+The service exposes dedicated endpoints for each flow:
+- POST /dcr for Dynamic Client Registration
+- POST /pubsub for Marketplace Pub/Sub events (with Google OIDC verification)
 """
 
 import logging
@@ -29,6 +30,18 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager for startup/shutdown events."""
     settings = get_settings()
+
+    # Warn if PUBSUB_AUDIENCE is not set in Cloud Run.
+    # Without an audience check, OIDC tokens issued for other services
+    # would be accepted by the /pubsub endpoint.
+    if not settings.pubsub_audience and os.getenv("K_SERVICE"):
+        logger.warning(
+            "PUBSUB_AUDIENCE is not set in Cloud Run (K_SERVICE=%s). "
+            "Pub/Sub OIDC tokens will be verified for signature and expiry "
+            "but NOT for audience. Set PUBSUB_AUDIENCE to your service URL "
+            "for stricter token binding.",
+            os.getenv("K_SERVICE"),
+        )
 
     # Startup: Initialize database
     try:
@@ -120,11 +133,11 @@ def create_app() -> FastAPI:
     )
 
     # Include the main handler router
-    # This provides the /dcr endpoint that handles both Pub/Sub and DCR
+    # This provides the /dcr and /pubsub endpoints
     app.include_router(handler_router)
 
-    # Add rate limiting middleware for /dcr endpoint (IP-based, no auth on this service)
-    app.add_middleware(RateLimitMiddleware, rate_limited_paths={"/dcr"})
+    # Add rate limiting middleware (IP-based, no auth on this service)
+    app.add_middleware(RateLimitMiddleware, rate_limited_paths={"/dcr", "/pubsub"})
 
     # Add security headers middleware (HSTS, X-Content-Type-Options, X-Frame-Options)
     app.add_middleware(SecurityHeadersMiddleware)

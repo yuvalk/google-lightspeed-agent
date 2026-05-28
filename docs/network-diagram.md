@@ -37,7 +37,7 @@ graph TB
 
     subgraph "Marketplace Handler Pod"
         direction TB
-        MKTPLACE["Marketplace Handler<br/>FastAPI :8001<br/>Probes :8003<br/>─────────────<br/>POST /dcr (hybrid)<br/>─────────────<br/>:8003 GET /health, /ready"]
+        MKTPLACE["Marketplace Handler<br/>FastAPI :8001<br/>Probes :8003<br/>─────────────<br/>POST /dcr<br/>POST /pubsub (OIDC)<br/>─────────────<br/>:8003 GET /health, /ready"]
 
         MKDB[("Marketplace DB<br/>PostgreSQL :5432<br/>─────────────<br/>accounts, entitlements<br/>DCR clients, usage")]
     end
@@ -52,7 +52,7 @@ graph TB
     CLIENT -- "HTTPS :8000<br/>POST / (A2A JSON-RPC)<br/>Bearer JWT" --> AGENT
     CLIENT -- "HTTPS :8000<br/>GET /.well-known/agent.json" --> AGENT
     CLIENT -- "HTTPS :8001<br/>POST /dcr" --> MKTPLACE
-    PUBSUB -- "HTTPS :8001<br/>POST /dcr (Pub/Sub msg)" --> MKTPLACE
+    PUBSUB -- "HTTPS :8001<br/>POST /pubsub (OIDC)" --> MKTPLACE
 
     %% === INTER-COMPONENT (Internal) ===
     AGENT -- "HTTP :8080/:8081<br/>/mcp<br/>+ JWT forwarding" --> MCP
@@ -122,7 +122,7 @@ graph TB
 
 2. **JWT token chain** -- External client sends Bearer JWT to Agent (:8000), which validates it via Red Hat SSO, then forwards the same JWT to MCP Sidecar, which uses it to authenticate with console.redhat.com on the user's behalf.
 
-3. **Hybrid DCR endpoint** -- Port 8001's `/dcr` route discriminates between direct DCR requests (from Gemini Enterprise with `software_statement`) and Pub/Sub provisioning messages based on request body structure.
+3. **Separate marketplace endpoints** -- Port 8001 exposes `/dcr` for direct DCR requests (from Gemini Enterprise with `software_statement`) and `/pubsub` for Pub/Sub provisioning messages (verified via Google OIDC token).
 
 4. **MCP port varies by deployment** -- Cloud Run uses :8080 (sidecar default), Podman uses :8081 to avoid conflict with A2A Inspector which also binds :8080 in dev.
 
