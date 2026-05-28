@@ -135,6 +135,10 @@ spec:
                 secretKeyRef:
                   name: database-url
                   key: latest
+            # Enforce SSL/TLS for direct TCP PostgreSQL connections.
+            # Not needed when using Cloud SQL Proxy (encryption at infra layer).
+            - name: DATABASE_REQUIRE_SSL
+              value: "true"
             # Session backend: "database" for production persistence,
             # "memory" for in-memory (sessions lost on restart)
             - name: SESSION_BACKEND

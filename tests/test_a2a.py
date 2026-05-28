@@ -573,6 +573,7 @@ class TestGetSessionService:
         mock_settings.session_database_url = (
             "postgresql+asyncpg://user:pass@host:5432/sessions"
         )
+        mock_settings.database_require_ssl = False
 
         mock_db_session = MagicMock()
 

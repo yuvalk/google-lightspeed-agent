@@ -126,6 +126,10 @@ spec:
                 secretKeyRef:
                   name: database-url
                   key: latest
+            # Enforce SSL/TLS for direct TCP PostgreSQL connections.
+            # Not needed when using Cloud SQL Proxy (encryption at infra layer).
+            - name: DATABASE_REQUIRE_SSL
+              value: "true"
             # Rate Limiting (Redis-backed, shared with Agent service)
             # Uses rediss:// (TLS) for in-transit encryption to Cloud Memorystore
             - name: RATE_LIMIT_REDIS_URL

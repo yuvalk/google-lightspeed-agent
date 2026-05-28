@@ -108,6 +108,7 @@ AGENT_PORT=8000
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | `sqlite+aiosqlite:///./lightspeed_agent.db` | Marketplace database connection URL (orders, DCR clients, auth) |
+| `DATABASE_REQUIRE_SSL` | `false` | Require SSL/TLS for PostgreSQL connections. Applies to both `DATABASE_URL` and `SESSION_DATABASE_URL`. Not needed for Cloud SQL Proxy (encryption at infrastructure layer). |
 | `SESSION_BACKEND` | `memory` | Session storage backend: `memory` (in-memory, no persistence) or `database` (PostgreSQL, persistent) |
 | `SESSION_DATABASE_URL` | *(empty)* | Session database URL for ADK sessions. Required when `SESSION_BACKEND=database`. |
 
@@ -152,6 +153,22 @@ This separation ensures:
 - Agents only access session data, not marketplace/auth data
 - Compromised agents can't access DCR credentials or order information
 - Different retention policies can be applied to sessions vs. marketplace data
+
+**SSL/TLS Encryption (Direct TCP Connections):**
+
+When connecting to PostgreSQL over direct TCP (not Cloud SQL Proxy), enable SSL to encrypt
+database traffic in transit:
+
+```bash
+DATABASE_REQUIRE_SSL=true
+```
+
+This adds `ssl=True` to the `asyncpg` connection arguments for both `DATABASE_URL` and
+`SESSION_DATABASE_URL`. The agent logs a warning at startup if this setting is disabled
+on Cloud Run with a PostgreSQL URL.
+
+> **Cloud SQL Proxy:** If using Cloud SQL Proxy, SSL is provided at the infrastructure layer
+> by the proxy itself. `DATABASE_REQUIRE_SSL` is not needed and can remain `false`.
 
 **Switching to In-Memory Sessions:**
 

@@ -90,8 +90,12 @@ def _get_session_service() -> Any:
             db_host,
         )
 
+        kwargs: dict[str, Any] = {}
+        if settings.database_require_ssl and not db_url.startswith("sqlite"):
+            kwargs["connect_args"] = {"ssl": True}
+
         try:
-            return RetryingDatabaseSessionService(db_url=db_url)
+            return RetryingDatabaseSessionService(db_url=db_url, **kwargs)
         except Exception as e:
             # Sanitize error message to avoid leaking credentials from URLs
             sanitized_msg = re.sub(r"://[^@]+@", "://***@", str(e))

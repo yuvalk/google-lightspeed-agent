@@ -180,6 +180,7 @@ All configuration is via environment variables, managed through Pydantic setting
 
 **Database:**
 - `DATABASE_URL` / `SESSION_DATABASE_URL` (PostgreSQL or SQLite)
+- `DATABASE_REQUIRE_SSL` (enforce SSL for PostgreSQL; not needed for Cloud SQL Proxy)
 
 **Auth:**
 - `RED_HAT_SSO_CLIENT_ID` / `RED_HAT_SSO_CLIENT_SECRET`

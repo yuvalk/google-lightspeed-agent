@@ -292,6 +292,10 @@ class Settings(BaseSettings):
         default=10,
         description="Maximum overflow connections beyond pool size",
     )
+    database_require_ssl: bool = Field(
+        default=False,
+        description="Require SSL/TLS for PostgreSQL database connections",
+    )
 
     # Session configuration: controls ADK session storage backend
     # Separate from marketplace DB for security isolation - each agent can have its own

@@ -94,6 +94,19 @@ async def lifespan(app: A2AFastAPI) -> AsyncIterator[None]:
         logger.error("Rate limiter Redis backend is unavailable: %s", e)
         raise
 
+    # Startup: Warn if database SSL is not enabled in Cloud Run with PostgreSQL
+    if (
+        os.getenv("K_SERVICE")
+        and not settings.database_require_ssl
+        and settings.database_url.startswith("postgresql")
+    ):
+        logger.warning(
+            "DATABASE_REQUIRE_SSL is not enabled in Cloud Run (K_SERVICE=%s). "
+            "If using direct TCP connections (not Cloud SQL Proxy), "
+            "enable DATABASE_REQUIRE_SSL=true to encrypt database traffic.",
+            os.getenv("K_SERVICE"),
+        )
+
     # Startup: Initialize database
     try:
         from lightspeed_agent.db import init_database
