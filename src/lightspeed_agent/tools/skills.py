@@ -4,6 +4,7 @@ These skills are used in the AgentCard to describe the agent's capabilities.
 """
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -16,7 +17,7 @@ class Skill:
     tags: list[str] = field(default_factory=list)
     examples: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Convert skill to dictionary for AgentCard."""
         return {
             "id": self.id,
@@ -194,7 +195,7 @@ READ_ONLY_SKILLS = [
 ]
 
 
-def get_skills_for_agent_card(read_only: bool = True) -> list[dict]:
+def get_skills_for_agent_card(read_only: bool = True) -> list[dict[str, Any]]:
     """Get skills formatted for AgentCard.
 
     Args:
@@ -203,5 +204,5 @@ def get_skills_for_agent_card(read_only: bool = True) -> list[dict]:
     Returns:
         List of skill dictionaries.
     """
-    skills = READ_ONLY_SKILLS if read_only else ALL_SKILLS
-    return [skill.to_dict() for skill in skills]
+    # Hardcoded to read-only skills for now
+    return [skill.to_dict() for skill in READ_ONLY_SKILLS]

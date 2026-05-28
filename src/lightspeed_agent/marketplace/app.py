@@ -9,6 +9,8 @@ using smart routing based on request content.
 """
 
 import logging
+import os
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -16,12 +18,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from lightspeed_agent.config import get_settings
 from lightspeed_agent.marketplace.router import router as handler_router
+from lightspeed_agent.probes import start_probe_server, stop_probe_server
+from lightspeed_agent.ratelimit import RateLimitMiddleware, get_redis_rate_limiter
+from lightspeed_agent.security import RequestBodyLimitMiddleware, SecurityHeadersMiddleware
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager for startup/shutdown events."""
     settings = get_settings()
 
@@ -36,7 +41,50 @@ async def lifespan(app: FastAPI):
         logger.error("Failed to initialize database: %s", e)
         raise
 
+    # Startup: Validate DCR configuration (fail-fast on Cloud Run)
+    # This ensures DCR_ENCRYPTION_KEY is valid BEFORE the service becomes ready,
+    # preventing silent failures when the first DCR request arrives.
+    try:
+        from lightspeed_agent.dcr import get_dcr_service
+
+        logger.info("Validating DCR service configuration")
+        get_dcr_service()  # Triggers DCRService.__init__() validation
+        logger.info("DCR service initialized successfully")
+    except Exception as e:
+        logger.error("Failed to initialize DCR service: %s", e)
+        raise
+
+    # Startup: Verify Redis connectivity for rate limiting
+    try:
+        await get_redis_rate_limiter().verify_connection()
+        logger.info("Rate limiter Redis backend is reachable")
+    except Exception as e:
+        logger.error("Rate limiter Redis backend is unavailable: %s", e)
+        raise
+
+    # Startup: Start the probe server on a separate port
+    async def _check_database() -> None:
+        from lightspeed_agent.db import get_engine
+
+        engine = get_engine()
+        async with engine.begin() as conn:
+            await conn.exec_driver_sql("SELECT 1")
+
+    async def _check_redis() -> None:
+        await get_redis_rate_limiter().verify_connection()
+
+    probe_port = int(os.getenv("HANDLER_PROBE_PORT", "8003"))
+    logger.info("Starting probe server on port %d", probe_port)
+    await start_probe_server(
+        probe_port,
+        "marketplace-handler",
+        readiness_checks={"database": _check_database, "redis": _check_redis},
+    )
+
     yield
+
+    # Shutdown: Stop the probe server
+    await stop_probe_server()
 
     # Shutdown: Close database connection
     try:
@@ -46,6 +94,12 @@ async def lifespan(app: FastAPI):
         await close_database()
     except Exception as e:
         logger.error("Failed to close database: %s", e)
+
+    # Shutdown: Close Redis connection used by rate limiter
+    try:
+        await get_redis_rate_limiter().close()
+    except Exception as e:
+        logger.error("Failed to close rate limiter Redis connection: %s", e)
 
 
 def create_app() -> FastAPI:
@@ -65,29 +119,40 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Health check endpoint
-    @app.get("/health")
-    async def health_check() -> dict:
-        """Health check endpoint."""
-        return {"status": "healthy", "service": "marketplace-handler"}
-
-    # Ready check endpoint
-    @app.get("/ready")
-    async def ready_check() -> dict:
-        """Readiness check endpoint."""
-        return {"status": "ready", "service": "marketplace-handler"}
-
     # Include the main handler router
     # This provides the /dcr endpoint that handles both Pub/Sub and DCR
     app.include_router(handler_router)
 
-    # Add CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # Add rate limiting middleware for /dcr endpoint (IP-based, no auth on this service)
+    app.add_middleware(RateLimitMiddleware, rate_limited_paths={"/dcr"})
+
+    # Add security headers middleware (HSTS, X-Content-Type-Options, X-Frame-Options)
+    app.add_middleware(SecurityHeadersMiddleware)
+
+    # Add request body size limit (1 MB — Pub/Sub messages and DCR requests are small)
+    app.add_middleware(RequestBodyLimitMiddleware, max_bytes=1 * 1024 * 1024)
+
+    # Add CORS middleware (same policy as agent service).
+    # The marketplace handler is server-to-server (Pub/Sub push, DCR from Gemini),
+    # so CORS is only needed for dev tools / debugging.
+    # Middleware execution order:
+    #   CORS -> BodyLimit -> SecurityHeaders -> RateLimit -> Handler
+    cors_origins = settings.cors_origins_list
+    if settings.debug and not cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=False,
+            allow_methods=["POST"],
+            allow_headers=["Content-Type", "Accept"],
+        )
+    elif cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["POST"],
+            allow_headers=["Content-Type", "Accept"],
+        )
 
     return app

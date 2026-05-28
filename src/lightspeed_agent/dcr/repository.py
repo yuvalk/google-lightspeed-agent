@@ -1,10 +1,9 @@
 """Repository for DCR registered clients with PostgreSQL persistence."""
 
 import logging
-from datetime import datetime
+from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from lightspeed_agent.db import DCRClientModel, get_session
 from lightspeed_agent.dcr.models import RegisteredClient
@@ -19,24 +18,12 @@ class DCRClientRepository:
     """
 
     async def get_by_client_id(self, client_id: str) -> RegisteredClient | None:
-        """Get a registered client by client_id.
-
-        The same client_id may be associated with multiple orders.
-        Returns the most recently created entry.
-
-        Args:
-            client_id: The OAuth client ID.
-
-        Returns:
-            RegisteredClient if found, None otherwise.
-        """
+        """Get a registered client by client_id."""
         async with get_session() as session:
             result = await session.execute(
-                select(DCRClientModel)
-                .where(DCRClientModel.client_id == client_id)
-                .order_by(DCRClientModel.created_at.desc())
+                select(DCRClientModel).where(DCRClientModel.client_id == client_id)
             )
-            model = result.scalars().first()
+            model = result.scalar_one_or_none()
             if model:
                 return self._model_to_entity(model)
             return None
@@ -59,6 +46,26 @@ class DCRClientRepository:
                 return self._model_to_entity(model)
             return None
 
+    async def delete_by_order_id(self, order_id: str) -> bool:
+        """Delete a registered client by order_id.
+
+        Args:
+            order_id: The marketplace order ID.
+
+        Returns:
+            True if a client was deleted, False if not found.
+        """
+        async with get_session() as session:
+            result = await session.execute(
+                select(DCRClientModel).where(DCRClientModel.order_id == order_id)
+            )
+            model = result.scalar_one_or_none()
+            if model:
+                await session.delete(model)
+                logger.info("Deleted DCR client for order_id=%s", order_id)
+                return True
+            return False
+
     async def create(
         self,
         client_id: str,
@@ -69,7 +76,7 @@ class DCRClientRepository:
         grant_types: list[str] | None = None,
         registration_access_token_encrypted: str | None = None,
         keycloak_client_uuid: str | None = None,
-        metadata: dict | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> RegisteredClient:
         """Create a new registered client.
 
@@ -81,7 +88,7 @@ class DCRClientRepository:
             redirect_uris: OAuth redirect URIs.
             grant_types: OAuth grant types.
             registration_access_token_encrypted: Encrypted registration access token.
-            keycloak_client_uuid: Keycloak's internal client UUID.
+            keycloak_client_uuid: SSO internal client UUID (legacy column name).
             metadata: Additional metadata.
 
         Returns:
@@ -100,7 +107,8 @@ class DCRClientRepository:
                 metadata_=metadata or {},
             )
             session.add(model)
-            await session.flush()  # Get the created_at timestamp
+            await session.flush()
+            await session.refresh(model)
 
             logger.info(
                 "Created DCR client: client_id=%s, order_id=%s",

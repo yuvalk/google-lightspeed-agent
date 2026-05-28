@@ -31,14 +31,14 @@ The system uses a **two-service architecture** to handle marketplace integration
 │                    ─────────────────────────────────                        │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │                    Hybrid /dcr Endpoint                             │    │
-│  │  - Pub/Sub Events → Approve accounts/entitlements                   │    │
-│  │  - DCR Requests → Validate order, create OAuth clients via Keycloak │    │
+│  │  - Pub/Sub Events → Approve accounts and entitlements               │    │
+│  │  - DCR Requests → Validate order, create OAuth clients via GMA API  │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                              │                                              │
 │                              ▼                                              │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────────┐  │
 │  │   PostgreSQL    │  │   Red Hat SSO   │  │   Google Procurement API    │  │
-│  │   (Orders, DCR) │  │   (Keycloak)    │  │   (Account Approval)        │  │
+│  │   (Orders, DCR) │  │   (GMA SSO API) │  │   (Entitlement Approval)    │  │
 │  └─────────────────┘  └─────────────────┘  └─────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────┘
                                 ▲
@@ -78,7 +78,7 @@ DCR allows Marketplace customers to automatically register as OAuth clients. The
 
 | Request Type | Content | Handler Action |
 |-------------|---------|----------------|
-| Pub/Sub Event | `{"message": {"data": "..."}}` | Approve account/entitlement |
+| Pub/Sub Event | `{"message": {"data": "..."}}` | Approve account and entitlement |
 | DCR Request | `{"software_statement": "..."}` | Create OAuth client |
 
 ### AgentCard DCR Extension
@@ -90,11 +90,9 @@ The AgentCard (served by the Agent on port 8000) advertises DCR support and poin
   "capabilities": {
     "extensions": [
       {
-        "uri": "urn:google:agent:dcr",
-        "description": "Dynamic Client Registration for OAuth 2.0",
+        "uri": "https://cloud.google.com/marketplace/docs/partners/ai-agents/setup-dcr",
         "params": {
-          "endpoint": "https://handler.example.com/dcr",
-          "supportedGrantTypes": ["authorization_code", "refresh_token"]
+          "target_url": "https://handler.example.com/dcr"
         }
       }
     ]
@@ -102,7 +100,7 @@ The AgentCard (served by the Agent on port 8000) advertises DCR support and poin
 }
 ```
 
-For the complete DCR flow, JWT validation, Keycloak integration, security considerations, and local testing instructions, see [Authentication - DCR](authentication.md#dynamic-client-registration-dcr).
+For the complete DCR flow, JWT validation, security considerations, and local testing instructions, see [Authentication - DCR](authentication.md#dynamic-client-registration-dcr).
 
 ## Procurement Integration
 
@@ -114,10 +112,10 @@ Marketplace sends procurement events via Pub/Sub:
 
 | Event | Description |
 |-------|-------------|
-| `ACCOUNT_CREATION_REQUESTED` | New customer account |
+| `ACCOUNT_CREATION_REQUESTED` | New customer account — auto-approved via Procurement API |
 | `ACCOUNT_ACTIVE` | Account approved and active |
 | `ACCOUNT_DELETED` | Account deleted |
-| `ENTITLEMENT_CREATION_REQUESTED` | New subscription request |
+| `ENTITLEMENT_CREATION_REQUESTED` | New subscription request (filtered by product) |
 | `ENTITLEMENT_ACTIVE` | Subscription activated |
 | `ENTITLEMENT_RENEWED` | Subscription renewed |
 | `ENTITLEMENT_OFFER_ACCEPTED` | Offer auto-accepted |
@@ -148,6 +146,14 @@ Marketplace sends procurement events via Pub/Sub:
   }
 }
 ```
+
+### Multi-Agent Product Filtering
+
+In multi-agent deployments where multiple agents share the same Google Cloud
+project and Pub/Sub topic, events are filtered by the `product` field in the
+entitlement data. Each agent only processes events matching its
+`SERVICE_CONTROL_SERVICE_NAME`. Account-only events (no product field) pass
+through without filtering and are handled normally (e.g. account approval).
 
 ### Handling Entitlements
 
@@ -323,8 +329,8 @@ curl -X POST http://localhost:8001/dcr \
     "software_statement": "your-test-jwt"
   }'
 
-# Test the agent health
-curl http://localhost:8000/health
+# Test the agent health (probe port)
+curl http://localhost:8002/health
 ```
 
 ### Test Procurement Events

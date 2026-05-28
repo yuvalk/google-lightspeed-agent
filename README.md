@@ -18,7 +18,7 @@ This agent provides AI-powered access to Red Hat Insights services, enabling nat
 - Built with Google ADK and Gemini 2.5 Flash
 - A2A protocol support with SSE streaming for multi-agent ecosystems
 - OAuth 2.0 authentication via Red Hat SSO
-- Dynamic Client Registration (DCR) with Red Hat SSO (Keycloak)
+- Dynamic Client Registration (DCR) with Red Hat SSO via GMA SSO API
 - Google Cloud Marketplace integration (Gemini Enterprise)
 - PostgreSQL persistence for production deployments
 - Usage tracking and reporting to Google Cloud Service Control
@@ -183,13 +183,9 @@ See [Container Deployment](#container-deployment) for full details.
 
 #### Option 3: Development without MCP (Limited)
 
-If MCP credentials are not configured, the agent will start without tools (limited functionality):
+If the MCP server is not running, the agent will start without tools (limited functionality):
 
 ```bash
-# Unset MCP credentials to skip MCP connection
-unset LIGHTSPEED_CLIENT_ID
-unset LIGHTSPEED_CLIENT_SECRET
-
 # Run agent (will work but without Insights API access)
 adk web agents
 ```
@@ -203,29 +199,10 @@ See `.env.example` for all available configuration options.
 | Variable | Description |
 |----------|-------------|
 | `GOOGLE_API_KEY` | Google AI Studio API key |
-| `LIGHTSPEED_CLIENT_ID` | Red Hat Insights service account ID |
-| `LIGHTSPEED_CLIENT_SECRET` | Red Hat Insights service account secret |
 | `RED_HAT_SSO_CLIENT_ID` | OAuth client ID for Red Hat SSO |
 | `RED_HAT_SSO_CLIENT_SECRET` | OAuth client secret for Red Hat SSO |
 
 ### Obtaining Credentials
-
-#### Lightspeed Service Account (for MCP Server)
-
-The MCP server uses Lightspeed service account credentials to authenticate with console.redhat.com APIs. To obtain these:
-
-1. Go to [console.redhat.com](https://console.redhat.com)
-2. Navigate to **Settings** → **Integrations** → **Red Hat Lightspeed**
-3. Create a new service account
-4. Copy the **Client ID** and **Client Secret**
-
-These credentials allow the MCP server to access:
-- Advisor (system recommendations)
-- Inventory (registered systems)
-- Vulnerability (CVE information)
-- Remediations (playbook management)
-- Patch (system updates)
-- Image Builder (custom RHEL images)
 
 #### Red Hat SSO OAuth Credentials
 
@@ -275,7 +252,7 @@ lightspeed_agent/
         ├── core/               # Agent definition (ADK)
         ├── db/                 # Database models (SQLAlchemy)
         ├── dcr/                # Dynamic Client Registration
-        │   ├── keycloak_client.py  # Red Hat SSO DCR client
+        │   ├── gma_client.py       # GMA SSO API client
         │   └── service.py          # DCR business logic
         ├── marketplace/        # Google Marketplace integration & handler service
         │   ├── app.py              # Handler FastAPI app (port 8001)
@@ -320,7 +297,6 @@ The system is deployed as **three separate pods**:
 
 - Podman 4.0+
 - Access to Red Hat container registry (for RHEL-based images)
-- Red Hat Insights Lightspeed service account credentials
 - Google API key or Vertex AI access
 
 ### Build the Container Images
@@ -362,8 +338,6 @@ podman build -t localhost/a2a-inspector:latest /tmp/a2a-inspector
 
    **API Credentials:**
    - `GOOGLE_API_KEY`: Your Google AI Studio API key
-   - `LIGHTSPEED_CLIENT_ID`: Red Hat Insights service account ID
-   - `LIGHTSPEED_CLIENT_SECRET`: Red Hat Insights service account secret
    - `RED_HAT_SSO_CLIENT_ID`: OAuth client ID for Red Hat SSO
    - `RED_HAT_SSO_CLIENT_SECRET`: OAuth client secret for Red Hat SSO
 
@@ -424,7 +398,7 @@ podman kube down deploy/podman/my-secrets.yaml
 
 | Service | URL | Description |
 |---------|-----|-------------|
-| Handler Health | http://localhost:8001/health | Handler health status |
+| Handler Health | http://localhost:8003/health | Handler health probe (port 8003) |
 | DCR Endpoint | http://localhost:8001/dcr | Pub/Sub + DCR hybrid endpoint |
 
 **Lightspeed Agent:**
@@ -432,7 +406,7 @@ podman kube down deploy/podman/my-secrets.yaml
 | Service | URL | Description |
 |---------|-----|-------------|
 | Agent API | http://localhost:8000 | Main A2A endpoint |
-| Health Check | http://localhost:8000/health | Agent health status |
+| Health Check | http://localhost:8002/health | Agent health probe (port 8002) |
 | AgentCard | http://localhost:8000/.well-known/agent.json | A2A discovery |
 | MCP Server | http://localhost:8081 | MCP server (internal) |
 | A2A Inspector | http://localhost:8080 | Web UI for agent interaction |
@@ -455,14 +429,14 @@ for i in {1..70}; do
   code=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
     -X POST http://localhost:8000/ \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"message/send","id":"'$i'","params":{"message":{"role":"user","parts":[{"type":"text","text":"test"}]}}}')
+    -d '{"jsonrpc":"2.0","method":"message/send","id":"'$i'","params":{"message":{"messageId":"'$i'","role":"user","parts":[{"type":"text","text":"test"}]}}}')
   echo "$i -> $code"
 done
 
 # Inspect 429 details and headers
 curl -i -X POST http://localhost:8000/ \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"message/send","id":"x","params":{"message":{"role":"user","parts":[{"type":"text","text":"test"}]}}}'
+  -d '{"jsonrpc":"2.0","method":"message/send","id":"x","params":{"message":{"messageId":"x","role":"user","parts":[{"type":"text","text":"test"}]}}}'
 
 # Inspect Redis rate-limit keys
 podman exec -it lightspeed-redis-redis redis-cli KEYS "lightspeed:ratelimit:*"
@@ -548,6 +522,7 @@ curl -X POST http://localhost:8000/ \
     "method": "message/send",
     "params": {
       "message": {
+        "messageId": "1",
         "role": "user",
         "parts": [{"type": "text", "text": "Show my systems"}]
       }
@@ -562,9 +537,9 @@ For development without real tokens, set `SKIP_JWT_VALIDATION: "true"` in the co
 
 ### Testing DCR Locally
 
-The Dynamic Client Registration (DCR) flow can be tested locally without admin access to the production Red Hat SSO. There are two modes: **static credentials** (no Keycloak needed) and **real DCR** against a local Keycloak instance.
+The Dynamic Client Registration (DCR) flow can be tested locally.
 
-Both modes require `SKIP_JWT_VALIDATION=true` on the marketplace handler so it accepts JWTs signed by your own GCP service account instead of Google's production `cloud-agentspace` account.
+Testing requires `SKIP_JWT_VALIDATION=true` on the marketplace handler so it accepts JWTs signed by your own GCP service account instead of Google's production `cloud-agentspace` account.
 
 #### Prerequisites
 
@@ -610,9 +585,7 @@ Both modes require `SKIP_JWT_VALIDATION=true` on the marketplace handler so it a
    python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
    ```
 
-#### Option A: Static Credentials (No Keycloak)
-
-This mode skips Keycloak client creation. Instead, the caller provides pre-registered `client_id` and `client_secret` in the DCR request body alongside the `software_statement`. The handler validates them (skipped with `SKIP_JWT_VALIDATION=true`), stores them linked to the order, and returns them.
+#### Running the DCR Test
 
 1. **Copy the secrets template and edit it:**
    ```bash
@@ -623,13 +596,14 @@ This mode skips Keycloak client creation. Instead, the caller provides pre-regis
    ```yaml
    stringData:
      DCR_ENCRYPTION_KEY: "<your-fernet-key>"
+     GMA_CLIENT_ID: "<your-gma-client-id>"
+     GMA_CLIENT_SECRET: "<your-gma-client-secret>"
      MARKETPLACE_DATABASE_URL: "postgresql+asyncpg://insights:insights@localhost:5432/lightspeed_agent"
      MARKETPLACE_DB_PASSWORD: "insights"
    ```
 
-2. **Set `DCR_ENABLED` to `false`** in `deploy/podman/lightspeed-agent-configmap.yaml`:
+2. **Set `SKIP_JWT_VALIDATION`** in `deploy/podman/lightspeed-agent-configmap.yaml`:
    ```yaml
-   DCR_ENABLED: "false"
    SKIP_JWT_VALIDATION: "true"
    ```
 
@@ -641,163 +615,23 @@ This mode skips Keycloak client creation. Instead, the caller provides pre-regis
      deploy/podman/marketplace-handler-pod.yaml
    ```
 
-4. **Run the test script with static credentials:**
+4. **Run the test script:**
    ```bash
    # Method A (key file):
    export TEST_SA_KEY_FILE=dcr-test-key.json
-   export TEST_CLIENT_ID=my-test-client
-   export TEST_CLIENT_SECRET=my-test-secret
    python scripts/test_dcr.py
 
    # Method B (IAM API):
    export TEST_SERVICE_ACCOUNT=dcr-test@<PROJECT>.iam.gserviceaccount.com
-   export TEST_CLIENT_ID=my-test-client
-   export TEST_CLIENT_SECRET=my-test-secret
    python scripts/test_dcr.py
    ```
 
-   The script sends `client_id` and `client_secret` in the request body. The handler stores them and returns them. The second request verifies idempotency (same credentials returned for the same order).
+   The handler creates OAuth tenant credentials via the GMA SSO API and returns them. The second request verifies idempotency (same credentials returned for the same order).
 
 5. **Clean up:**
    ```bash
    podman kube down deploy/podman/marketplace-handler-pod.yaml
    ```
-
-#### Option B: Real DCR with Local Keycloak
-
-This mode exercises the full DCR flow -- real OAuth client creation in a locally-controlled Keycloak instance.
-
-1. **Start Keycloak in Podman:**
-   ```bash
-   podman run -d \
-     --name keycloak-test \
-     -p 8180:8080 \
-     -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
-     -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
-     -e KC_HTTP_ENABLED=true \
-     -e KC_HOSTNAME=host.containers.internal \
-     -e KC_HOSTNAME_PORT=8180 \
-     -e KC_HOSTNAME_STRICT=true \
-     quay.io/keycloak/keycloak:26.0 start-dev --http-port=8080
-   ```
-
-   > **Why these hostname settings?** The marketplace handler container reaches
-   > Keycloak via `host.containers.internal:8180`, but you interact with Keycloak
-   > from the host via `localhost:8180`. With `KC_HOSTNAME_STRICT=true`, Keycloak
-   > uses a consistent issuer (`http://host.containers.internal:8180/...`) for all
-   > tokens regardless of which hostname the request arrives on. Without this, the
-   > IAT (Initial Access Token) would have a `localhost` issuer that mismatches
-   > when the handler presents it via `host.containers.internal`, causing
-   > "Failed decode token" errors.
-
-2. **Disable SSL requirement and create the test realm:**
-
-   Since `KC_HOSTNAME_STRICT=true` treats `localhost` requests as external,
-   you must disable the SSL requirement via `kcadm.sh` from inside the container:
-
-   ```bash
-   # Authenticate kcadm.sh (uses internal port 8080)
-   podman exec keycloak-test /opt/keycloak/bin/kcadm.sh \
-     config credentials --server http://localhost:8080 \
-     --realm master --user admin --password admin
-
-   # Disable SSL on master realm
-   podman exec keycloak-test /opt/keycloak/bin/kcadm.sh \
-     update realms/master -s sslRequired=NONE
-
-   # Create test-realm with SSL disabled
-   podman exec keycloak-test /opt/keycloak/bin/kcadm.sh \
-     create realms -s realm=test-realm -s enabled=true -s sslRequired=NONE
-   ```
-
-3. **Get an admin token:**
-   ```bash
-   ADMIN_TOKEN=$(curl -s -X POST \
-     "http://localhost:8180/realms/master/protocol/openid-connect/token" \
-     -d "client_id=admin-cli" \
-     -d "username=admin" \
-     -d "password=admin" \
-     -d "grant_type=password" \
-     | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-   ```
-
-4. **Generate an Initial Access Token (IAT) for DCR:**
-   ```bash
-   IAT=$(curl -s -X POST \
-     "http://localhost:8180/admin/realms/test-realm/clients-initial-access" \
-     -H "Authorization: Bearer $ADMIN_TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"count": 100, "expiration": 86400}' \
-     | python -c "import sys,json; print(json.load(sys.stdin)['token'])")
-   echo "Initial Access Token: $IAT"
-   ```
-
-5. **Copy the secrets template and configure for local Keycloak:**
-   ```bash
-   cp deploy/podman/lightspeed-agent-secret.yaml deploy/podman/my-secrets.yaml
-   ```
-
-   Edit `deploy/podman/my-secrets.yaml`:
-   ```yaml
-   stringData:
-     RED_HAT_SSO_CLIENT_ID: "lightspeed-agent"
-     RED_HAT_SSO_CLIENT_SECRET: "dummy"
-     DCR_INITIAL_ACCESS_TOKEN: "<the IAT from step 4>"
-     DCR_ENCRYPTION_KEY: "<your-fernet-key>"
-     MARKETPLACE_DATABASE_URL: "postgresql+asyncpg://insights:insights@localhost:5432/lightspeed_agent"
-     MARKETPLACE_DB_PASSWORD: "insights"
-   ```
-
-6. **Update the configmap** in `deploy/podman/lightspeed-agent-configmap.yaml`:
-   ```yaml
-   DCR_ENABLED: "true"
-   SKIP_JWT_VALIDATION: "true"
-   RED_HAT_SSO_ISSUER: "http://host.containers.internal:8180/realms/test-realm"
-   ```
-
-   Note: Use `host.containers.internal` so the handler container can reach Keycloak running on the host.
-
-7. **Start the marketplace handler pod:**
-   ```bash
-   podman kube play deploy/podman/my-secrets.yaml
-   podman kube play \
-     --configmap deploy/podman/lightspeed-agent-configmap.yaml \
-     deploy/podman/marketplace-handler-pod.yaml
-   ```
-
-8. **Run the test script:**
-   ```bash
-   # Method A (key file):
-   export TEST_SA_KEY_FILE=dcr-test-key.json
-   python scripts/test_dcr.py
-
-   # Method B (IAM API):
-   export TEST_SERVICE_ACCOUNT=dcr-test@<PROJECT>.iam.gserviceaccount.com
-   python scripts/test_dcr.py
-   ```
-
-   The handler will create a real OAuth client in your local Keycloak. You can verify it at http://localhost:8180/admin -> test-realm -> Clients.
-
-9. **You can also test Keycloak DCR directly** (bypassing the handler entirely):
-   ```bash
-   curl -s -X POST \
-     "http://localhost:8180/realms/test-realm/clients-registrations/openid-connect" \
-     -H "Authorization: Bearer $IAT" \
-     -H "Content-Type: application/json" \
-     -d '{
-       "client_name": "gemini-order-test-123",
-       "redirect_uris": ["https://gemini.google.com/callback"],
-       "grant_types": ["authorization_code", "refresh_token"],
-       "token_endpoint_auth_method": "client_secret_basic",
-       "application_type": "web"
-     }'
-   ```
-
-10. **Clean up:**
-    ```bash
-    podman kube down deploy/podman/marketplace-handler-pod.yaml
-    podman stop keycloak-test && podman rm keycloak-test
-    ```
 
 #### Test Script Reference
 
@@ -808,14 +642,12 @@ The test script at `scripts/test_dcr.py` is configurable via environment variabl
 | `TEST_SA_KEY_FILE` | | Path to SA key JSON file (Method A, recommended) |
 | `TEST_SERVICE_ACCOUNT` | | SA email for IAM Credentials API (Method B) |
 | `MARKETPLACE_HANDLER_URL` | `http://localhost:8001` | Marketplace handler base URL |
-| `PROVIDER_URL` | `https://your-agent-domain.com` | JWT audience (must match handler's `AGENT_PROVIDER_URL`) |
+| `PROVIDER_URL` | `https://www.redhat.com` | JWT audience (must match handler's `AGENT_PROVIDER_ORGANIZATION_URL`) |
 | `TEST_ORDER_ID` | random UUID | Marketplace order ID |
 | `TEST_ACCOUNT_ID` | `test-procurement-account-001` | Procurement account ID |
 | `TEST_REDIRECT_URIS` | `https://gemini.google.com/callback` | Comma-separated redirect URIs |
-| `TEST_CLIENT_ID` | | Static OAuth client ID (for `DCR_ENABLED=false` mode) |
-| `TEST_CLIENT_SECRET` | | Static OAuth client secret (for `DCR_ENABLED=false` mode) |
 
-The script sends two identical requests to verify idempotency — per Google's DCR spec, the handler must return the same `client_id`/`client_secret` for the same order. When `TEST_CLIENT_ID` and `TEST_CLIENT_SECRET` are set, the script includes them in the request body for static credentials mode.
+The script sends two identical requests to verify idempotency — per Google's DCR spec, the handler must return the same `client_id`/`client_secret` for the same order.
 
 ### Pod Services
 
@@ -860,12 +692,12 @@ This separation ensures:
 The MCP server runs as a sidecar container and provides tools for the agent to interact with Red Hat Insights APIs:
 
 1. **Agent receives a request** (e.g., "Show me my system vulnerabilities")
-2. **Agent calls MCP tools** via HTTP to the MCP server (localhost:8081), passing credentials in headers
-3. **MCP server authenticates** with console.redhat.com using the credentials from headers
+2. **Agent calls MCP tools** via HTTP to the MCP server (localhost:8081), forwarding the caller's JWT token in the Authorization header
+3. **MCP server authenticates** with console.redhat.com using the forwarded JWT token
 4. **MCP server calls Insights APIs** and returns results to the agent
 5. **Agent formats the response** and returns it to the user
 
-The Lightspeed credentials (`LIGHTSPEED_CLIENT_ID` and `LIGHTSPEED_CLIENT_SECRET`) are configured on the **agent** container, which passes them to the MCP server via HTTP headers on each request. The MCP server itself does not need credentials configured.
+The agent forwards the caller's JWT token to the MCP server via the `Authorization: Bearer` header on each request. The MCP server itself does not need credentials configured.
 
 ### Persistent Storage
 

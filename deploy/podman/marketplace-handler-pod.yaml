@@ -49,8 +49,6 @@ spec:
         - name: HANDLER_PORT
           value: "8001"
         # DCR Configuration
-        - name: DCR_ENABLED
-          value: "true"
         - name: DCR_CLIENT_NAME_PREFIX
           value: "gemini-order-"
         # Secrets
@@ -64,11 +62,17 @@ spec:
             secretKeyRef:
               name: lightspeed-agent-secrets
               key: RED_HAT_SSO_CLIENT_SECRET
-        - name: DCR_INITIAL_ACCESS_TOKEN
+        - name: GMA_CLIENT_ID
           valueFrom:
             secretKeyRef:
               name: lightspeed-agent-secrets
-              key: DCR_INITIAL_ACCESS_TOKEN
+              key: GMA_CLIENT_ID
+              optional: true
+        - name: GMA_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: lightspeed-agent-secrets
+              key: GMA_CLIENT_SECRET
               optional: true
         - name: DCR_ENCRYPTION_KEY
           valueFrom:

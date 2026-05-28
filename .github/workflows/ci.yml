@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  konflux-verify:
+    name: Verify Konflux PR
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.user.login == 'red-hat-konflux[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Import Konflux GPG public key
+        run: |
+          gpg --keyserver keyserver.ubuntu.com --recv-keys B5690EEEBB952194 ||
+            gpg --keyserver keys.openpgp.org --recv-keys B5690EEEBB952194
+
+      - name: Verify commit signatures and sign-off
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          EXPECTED_SOB="Signed-off-by: red-hat-konflux <126015336+red-hat-konflux[bot]@users.noreply.github.com>"
+          COMMITS=$(git rev-list "$BASE_SHA".."$HEAD_SHA")
+
+          if [ -z "$COMMITS" ]; then
+            echo "::error::No commits found in PR range $BASE_SHA..$HEAD_SHA"
+            exit 1
+          fi
+
+          for COMMIT in $COMMITS; do
+            echo "::group::Verifying commit $COMMIT"
+
+            # Verify GPG signature exists and is valid
+            if ! VERIFY_OUTPUT=$(git verify-commit "$COMMIT" 2>&1); then
+              echo "::error::Commit $COMMIT has no valid GPG signature"
+              echo "$VERIFY_OUTPUT"
+              exit 1
+            fi
+
+            # Verify the signing key matches the expected Konflux key
+            if ! echo "$VERIFY_OUTPUT" | grep -q "B5690EEEBB952194"; then
+              echo "::error::Commit $COMMIT not signed with expected Konflux key (B5690EEEBB952194)"
+              echo "$VERIFY_OUTPUT"
+              exit 1
+            fi
+
+            # Verify Signed-off-by trailer
+            COMMIT_MSG=$(git log -1 --format=%B "$COMMIT")
+            if ! echo "$COMMIT_MSG" | grep -qF "$EXPECTED_SOB"; then
+              echo "::error::Commit $COMMIT missing required Signed-off-by trailer"
+              echo "Expected: $EXPECTED_SOB"
+              echo "Found:    $(echo "$COMMIT_MSG" | grep 'Signed-off-by' || echo '(none)')"
+              exit 1
+            fi
+
+            echo "Commit $COMMIT: VERIFIED"
+            echo "::endgroup::"
+          done
+
+          echo "All $(echo "$COMMITS" | wc -w) commit(s) verified successfully."
+
+  lint:
+    name: Lint
+    needs: [konflux-verify]
+    if: >-
+      !cancelled() &&
+      (needs.konflux-verify.result == 'success' || needs.konflux-verify.result == 'skipped')
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/centos/centos:stream9
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        run: dnf install -y python3.12 python3.12-pip python3.12-devel
+
+      - name: Install dependencies
+        run: python3.12 -m pip install -e ".[agent,dev]"
+
+      - name: Run ruff
+        run: python3.12 -m ruff check src/ tests/
+
+      - name: Run mypy
+        run: python3.12 -m mypy src/lightspeed_agent/ --ignore-missing-imports
+
+  test:
+    name: Test
+    needs: [konflux-verify]
+    if: >-
+      !cancelled() &&
+      (needs.konflux-verify.result == 'success' || needs.konflux-verify.result == 'skipped')
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/centos/centos:stream9
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        run: dnf install -y python3.12 python3.12-pip python3.12-devel
+
+      - name: Install dependencies
+        run: python3.12 -m pip install -e ".[agent,dev]"
+
+      - name: Run tests
+        run: python3.12 -m pytest tests/ -v
+
+  build:
+    name: Build container image
+    needs: [konflux-verify]
+    if: >-
+      !cancelled() &&
+      (needs.konflux-verify.result == 'success' || needs.konflux-verify.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: podman build -t lightspeed-agent:ci -f Containerfile .
+
+  ci-gate:
+    name: CI Gate
+    if: always()
+    needs: [konflux-verify, lint, test, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all jobs passed
+        run: |
+          # konflux-verify is skipped for non-Konflux PRs and pushes — that's expected
+          if [[ "${{ needs.konflux-verify.result }}" != "success" && "${{ needs.konflux-verify.result }}" != "skipped" ]]; then
+            echo "Konflux verification failed: ${{ needs.konflux-verify.result }}"
+            exit 1
+          fi
+          if [[ "${{ needs.lint.result }}" != "success" || "${{ needs.test.result }}" != "success" || "${{ needs.build.result }}" != "success" ]]; then
+            echo "One or more CI jobs failed or were cancelled."
+            echo "  konflux-verify: ${{ needs.konflux-verify.result }}"
+            echo "  lint:           ${{ needs.lint.result }}"
+            echo "  test:           ${{ needs.test.result }}"
+            echo "  build:          ${{ needs.build.result }}"
+            exit 1
+          fi
+          echo "All CI jobs passed."

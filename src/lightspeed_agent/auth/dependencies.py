@@ -8,6 +8,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from lightspeed_agent.auth.introspection import (
+    DisallowedScopeError,
     InsufficientScopeError,
     TokenIntrospector,
     TokenValidationError,
@@ -58,6 +59,12 @@ async def get_current_user(
         return user
     except InsufficientScopeError as e:
         logger.warning("Insufficient scope: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        ) from None
+    except DisallowedScopeError as e:
+        logger.warning("Disallowed scope: %s", e)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),

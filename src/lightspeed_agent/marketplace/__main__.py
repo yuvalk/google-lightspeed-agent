@@ -5,13 +5,9 @@ import os
 
 import uvicorn
 
-from lightspeed_agent.config import get_settings
 
-
-def main():
+def main() -> None:
     """Run the Marketplace Handler service."""
-    settings = get_settings()
-
     # Configure logging
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     log_format = os.getenv("LOG_FORMAT", "text")
@@ -19,7 +15,10 @@ def main():
     if log_format == "json":
         logging.basicConfig(
             level=log_level,
-            format='{"time": "%(asctime)s", "level": "%(levelname)s", "logger": "%(name)s", "message": "%(message)s"}',
+            format=(
+                '{"time": "%(asctime)s", "level": "%(levelname)s",'
+                ' "logger": "%(name)s", "message": "%(message)s"}'
+            ),
         )
     else:
         logging.basicConfig(
@@ -30,8 +29,10 @@ def main():
     # Get host and port from environment
     host = os.getenv("HANDLER_HOST", "0.0.0.0")
     port = int(os.getenv("HANDLER_PORT", "8001"))
+    probe_port = int(os.getenv("HANDLER_PROBE_PORT", "8003"))
 
     logging.info(f"Starting Marketplace Handler on {host}:{port}")
+    logging.info(f"Probe server will start on port {probe_port}")
 
     uvicorn.run(
         "lightspeed_agent.marketplace.app:create_app",

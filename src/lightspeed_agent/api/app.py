@@ -9,22 +9,38 @@ marketplace-handler service. See lightspeed_agent.marketplace.
 """
 
 import logging
+import pathlib
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
-from fastapi import FastAPI
+from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPI
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import FileResponse
 
 from lightspeed_agent.api.a2a.a2a_setup import setup_a2a_routes
 from lightspeed_agent.api.a2a.agent_card import get_agent_card_dict
 from lightspeed_agent.auth import AuthenticationMiddleware
 from lightspeed_agent.config import get_settings
+from lightspeed_agent.probes import start_probe_server, stop_probe_server
 from lightspeed_agent.ratelimit import RateLimitMiddleware, get_redis_rate_limiter
+from lightspeed_agent.security import RequestBodyLimitMiddleware, SecurityHeadersMiddleware
+
+_LOGO_PATH = pathlib.Path(__file__).parent.parent / "static" / "logo.png"
 
 logger = logging.getLogger(__name__)
 
 
+def _agent_card_response(request: Request) -> dict[str, Any]:
+    """Build agent card dict with a dynamic iconUrl derived from the request base URL."""
+    card = get_agent_card_dict()
+    icon_url = f"{str(request.base_url).rstrip('/')}/static/logo.png"
+    return {**card, "iconUrl": icon_url}
+
+
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: A2AFastAPI) -> AsyncIterator[None]:
     """Application lifespan manager for startup/shutdown events."""
     settings = get_settings()
 
@@ -64,7 +80,28 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error("Failed to start reporting scheduler: %s", e)
 
+    # Startup: Start the probe server on a separate port
+    async def _check_database() -> None:
+        from lightspeed_agent.db import get_engine
+
+        engine = get_engine()
+        async with engine.begin() as conn:
+            await conn.exec_driver_sql("SELECT 1")
+
+    async def _check_redis() -> None:
+        await get_redis_rate_limiter().verify_connection()
+
+    logger.info("Starting probe server on port %d", settings.agent_probe_port)
+    await start_probe_server(
+        settings.agent_probe_port,
+        settings.agent_name,
+        readiness_checks={"database": _check_database, "redis": _check_redis},
+    )
+
     yield
+
+    # Shutdown: Stop the probe server
+    await stop_probe_server()
 
     # Shutdown: Stop the usage reporting scheduler
     if settings.service_control_enabled and settings.service_control_service_name:
@@ -92,7 +129,7 @@ async def lifespan(app: FastAPI):
         logger.error("Failed to close rate limiter Redis connection: %s", e)
 
 
-def create_app() -> FastAPI:
+def create_app() -> A2AFastAPI:
     """Create and configure the FastAPI application.
 
     Returns:
@@ -100,7 +137,7 @@ def create_app() -> FastAPI:
     """
     settings = get_settings()
 
-    app = FastAPI(
+    app = A2AFastAPI(
         title=settings.agent_name,
         description=settings.agent_description,
         version="0.1.0",
@@ -109,21 +146,22 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Health check endpoint
-    @app.get("/health")
-    async def health_check() -> dict:
-        """Health check endpoint."""
-        return {"status": "healthy", "agent": settings.agent_name}
+    # Serve the Red Hat logo for the agent card iconUrl
+    @app.get("/static/logo.png")
+    async def serve_logo() -> FileResponse:
+        """Serve the agent logo image."""
+        return FileResponse(_LOGO_PATH, media_type="image/png")
 
-    # Ready check endpoint
-    @app.get("/ready")
-    async def ready_check() -> dict:
-        """Readiness check endpoint."""
-        return {"status": "ready", "agent": settings.agent_name}
+    # Custom agent card endpoint registered BEFORE setup_a2a_routes so
+    # FastAPI's first-match routing picks it up instead of the SDK default.
+    @app.get("/.well-known/agent.json")
+    async def agent_card_with_icon(request: Request) -> dict[str, Any]:
+        """AgentCard endpoint with dynamic iconUrl."""
+        return _agent_card_response(request)
 
     # Set up A2A protocol routes using ADK's built-in integration
     # This provides:
-    # - GET /.well-known/agent.json - AgentCard
+    # - GET /.well-known/agent.json - AgentCard (overridden above)
     # - POST / - JSON-RPC 2.0 endpoint for message/send, message/stream, etc.
     # The ADK integration handles SSE streaming, task management, and
     # event conversion automatically.
@@ -131,29 +169,60 @@ def create_app() -> FastAPI:
 
     # Alias for agent card (some clients use agent-card.json)
     @app.get("/.well-known/agent-card.json")
-    async def agent_card_alias() -> dict:
+    async def agent_card_alias(request: Request) -> dict[str, Any]:
         """AgentCard endpoint (alias for agent.json)."""
-        return get_agent_card_dict()
+        return _agent_card_response(request)
 
-    # Add rate limiting middleware
-    app.add_middleware(RateLimitMiddleware)
-
-    # Add authentication middleware for A2A endpoint
+    # Add authentication middleware for A2A endpoint (innermost layer)
     # Validates Red Hat SSO JWT tokens on POST / requests
     # Can be disabled with SKIP_JWT_VALIDATION=true for development
     app.add_middleware(AuthenticationMiddleware)
 
-    # Add CORS middleware for A2A Inspector and other browser-based clients
-    # This must be added after other middleware to be processed first
-    # Middleware execution order: CORS -> Auth -> RateLimit -> Handler
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],  # Allow all origins for development
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["*"],
-    )
+    # Add rate limiting middleware (runs before auth so unauthenticated
+    # floods are throttled at the IP level before any auth processing)
+    app.add_middleware(RateLimitMiddleware)
+
+    # Add security headers middleware (HSTS, X-Content-Type-Options, X-Frame-Options)
+    app.add_middleware(SecurityHeadersMiddleware)
+
+    # Add request body size limit (10 MB — rejects oversized payloads before processing)
+    app.add_middleware(RequestBodyLimitMiddleware, max_bytes=10 * 1024 * 1024)
+
+    # Add CORS middleware for A2A Inspector and other browser-based clients.
+    # - debug mode: allow all origins (no credentials) for dev tools
+    # - production with CORS_ALLOWED_ORIGINS set: allow those origins with credentials
+    # - production without CORS_ALLOWED_ORIGINS: skip CORS entirely (server-to-server)
+    # Middleware execution order:
+    #   CORS -> BodyLimit -> SecurityHeaders -> RateLimit -> Auth -> Handler
+    cors_origins = settings.cors_origins_list
+    if settings.debug and not cors_origins:
+        # Development: wide-open for A2A Inspector / browser dev tools
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=False,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Authorization", "Content-Type", "Accept"],
+            expose_headers=[
+                "X-RateLimit-Limit",
+                "X-RateLimit-Remaining",
+                "Retry-After",
+            ],
+        )
+    elif cors_origins:
+        # Explicit origin allowlist (production or dev override)
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Authorization", "Content-Type", "Accept"],
+            expose_headers=[
+                "X-RateLimit-Limit",
+                "X-RateLimit-Remaining",
+                "Retry-After",
+            ],
+        )
 
     # Include Service Control router (admin endpoints for usage reporting)
     # Provides:

@@ -108,11 +108,13 @@ class GoogleJWTValidator:
         """Initialize the validator.
 
         Args:
-            expected_audience: Expected audience (agent's provider URL).
+            expected_audience: Expected audience (agent provider's organization URL).
                              Uses settings if not provided.
         """
         self._settings = get_settings()
-        self._expected_audience = expected_audience or self._settings.agent_provider_url
+        self._expected_audience = (
+            expected_audience or self._settings.agent_provider_organization_url
+        )
         self._cert_cache = GoogleCertificateCache()
 
     async def _decode_without_verification(

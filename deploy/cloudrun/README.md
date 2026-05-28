@@ -2,6 +2,49 @@
 
 Deploy the Red Hat Lightspeed Agent for Google Cloud to Google Cloud Run for production use.
 
+## Table of Contents
+
+- [Architecture](#architecture)
+- [Service Accounts](#service-accounts)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+  - [1. Set Environment Variables](#1-set-environment-variables)
+  - [2. Run Setup Script](#2-run-setup-script)
+  - [3. Set Up Cloud SQL Database](#3-set-up-cloud-sql-database)
+  - [4. Redis Setup for Rate Limiting](#4-redis-setup-for-rate-limiting)
+  - [5. Configure Secrets](#5-configure-secrets)
+  - [6. Copy MCP Image to GCR](#6-copy-mcp-image-to-gcr)
+  - [7. Deploy](#7-deploy)
+- [Service Configuration](#service-configuration)
+  - [Agent Container](#agent-container)
+  - [Rate Limiting (Redis)](#rate-limiting-redis)
+  - [MCP Output Size Guard](#mcp-output-size-guard)
+  - [MCP Server Sidecar](#mcp-server-sidecar)
+  - [Copying the MCP Image to GCR](#copying-the-mcp-image-to-gcr)
+  - [Customizing MCP Server Configuration](#customizing-mcp-server-configuration)
+  - [Alternative: Use Docker Hub](#alternative-use-docker-hub)
+  - [Scaling](#scaling)
+- [How the MCP Server Works](#how-the-mcp-server-works)
+- [Authentication](#authentication)
+- [Endpoints](#endpoints)
+- [Testing the Deployment](#testing-the-deployment)
+- [Database Architecture](#database-architecture)
+- [Custom Domain](#custom-domain)
+- [Testing the Agent](#testing-the-agent)
+  - [Authentication Setup for Testing](#authentication-setup-for-testing)
+  - [Test Agent Card](#test-agent-card)
+  - [Test A2A Requests with Local Proxy](#test-a2a-requests-with-local-proxy)
+  - [Test with A2A Inspector](#test-with-a2a-inspector)
+  - [Cleanup After Testing](#cleanup-after-testing)
+  - [Testing Without Proxy (Direct Cloud Run Access)](#testing-without-proxy-direct-cloud-run-access)
+  - [Troubleshooting Testing Issues](#troubleshooting-testing-issues)
+- [Testing DCR on Cloud Run](#testing-dcr-on-cloud-run)
+- [GMA SSO API Configuration (Staging vs Production)](#gma-sso-api-configuration-staging-vs-production)
+- [Audit Logging](#audit-logging)
+- [Monitoring](#monitoring)
+- [Troubleshooting](#troubleshooting)
+- [Cleanup / Teardown](#cleanup--teardown)
+
 ## Architecture
 
 The deployment consists of **two separate Cloud Run services** plus **Cloud Memorystore for Redis** (for rate limiting):
@@ -21,7 +64,7 @@ The deployment consists of **two separate Cloud Run services** plus **Cloud Memo
 │                    Marketplace Handler Service (Port 8001)                      │
 │                    ───────────────────────────────────────                      │
 │  - Always running (minScale=1) to receive Pub/Sub events                        │
-│  - Handles account/entitlement approvals via Procurement API                    │
+│  - Handles entitlement approvals via Procurement API (filtered by product)      │
 │  - Handles DCR requests (creates OAuth clients in Red Hat SSO)                  │
 │  - Stores data in PostgreSQL                                                    │
 └──────────┬──────────────────────────────────────────────────────────────────────┘
@@ -30,14 +73,14 @@ The deployment consists of **two separate Cloud Run services** plus **Cloud Memo
            ▼                                                 ▼
 ┌──────────────────────────────────────────────┐    ┌──────────────────────┐
 │   Lightspeed Agent Service (Port 8000)       │    │  Red Hat SSO         │
-│   ─────────────────────────────────────      │    │  (Keycloak)          │
+│   ─────────────────────────────────────      │    │  (GMA SSO API)       │
 │  ┌──────────────────┐   ┌──────────────────┐ │    │                      │
 │  │ Lightspeed Agent │   │ Lightspeed MCP   │ │    │  Production:         │
 │  │                  │   │ Server (8081)    │ │    │   sso.redhat.com     │
 │  │  - Gemini 2.5    │   │                  │ │    │                      │
-│  │  - A2A protocol  │◄-►│ - Advisor tools  │ │    │  Testing:            │
-│  │  - OAuth 2.0     │   │ - Inventory tools│ │    │   Keycloak on        │
-│  │                  │   │ - Vuln. tools    │ │    │   Cloud Run          │
+│  │  - A2A protocol  │◄-►│ - Advisor tools  │ │    │                      │
+│  │  - OAuth 2.0     │   │ - Inventory tools│ │    │                      │
+│  │                  │   │ - Vuln. tools    │ │    │                      │
 │  └──────────────────┘   └────────┬─────────┘ │    └──────────────────────┘
 │                                  │           │
 └──────────────────────────────────┼───────────┘
@@ -62,7 +105,7 @@ The deployment consists of **two separate Cloud Run services** plus **Cloud Memo
 2. **Deploy Marketplace Handler first** - Must be running to receive provisioning events
 3. **Deploy Agent after provisioning** - Can be deployed when customers are ready to use the agent
 
-The MCP server runs as a sidecar in the Agent service. The agent forwards the caller's JWT token to the MCP server, which uses it to authenticate with console.redhat.com on behalf of the user. Alternatively, if Lightspeed service account credentials are configured, the agent sends those instead (see [MCP Authentication](#mcp-authentication)).
+The MCP server runs as a sidecar in the Agent service. The agent forwards the caller's JWT token to the MCP server, which uses it to authenticate with console.redhat.com on behalf of the user (see [MCP Authentication](#mcp-authentication)).
 
 ## Service Accounts
 
@@ -70,7 +113,7 @@ The deployment uses **two separate service accounts** following the principle of
 
 | Service Account | Name | Purpose | Permissions |
 |-----------------|------|---------|-------------|
-| **Runtime SA** | `lightspeed-agent` | Cloud Run service identity for both services | Secret Manager access, Vertex AI, Pub/Sub, Cloud SQL, logging, monitoring |
+| **Runtime SA** | `lightspeed-agent` | Cloud Run service identity for both services | Secret Manager access, Vertex AI, Pub/Sub, Cloud SQL, Service Usage, logging, monitoring |
 | **Pub/Sub Invoker SA** | `pubsub-invoker` | Authenticates Pub/Sub push subscriptions to invoke Cloud Run | `roles/run.invoker` on marketplace-handler service only |
 
 **Why two service accounts?**
@@ -97,8 +140,13 @@ Both are created automatically by `setup.sh`. The Pub/Sub Invoker SA is only cre
 
 ```bash
 export GOOGLE_CLOUD_PROJECT="your-project-id"
-export GOOGLE_CLOUD_LOCATION="us-central1"
+export GOOGLE_CLOUD_LOCATION="us-central1"  # Cloud Run deployment region
 export SERVICE_NAME="lightspeed-agent"
+
+# Vertex AI model location (use "global" for pay-as-you-go access).
+# This is separate from GOOGLE_CLOUD_LOCATION, which sets the Cloud Run
+# deployment region. Defaults to "global" if not set.
+# export VERTEXAI_LOCATION="global"
 
 # Optional: use a different name for the GCP service account
 # export SERVICE_ACCOUNT_NAME="my-custom-sa"
@@ -106,6 +154,36 @@ export SERVICE_NAME="lightspeed-agent"
 # Optional: disable Pub/Sub marketplace integration
 export ENABLE_MARKETPLACE="false"
 ```
+
+**Google Cloud Marketplace deployments:** If you are deploying with marketplace
+integration (`ENABLE_MARKETPLACE=true`, the default), you **must** set the
+following variables **before** running `setup.sh` or `deploy.sh`:
+
+```bash
+# Required: managed service name from the Producer Portal (the product-level
+# identifier). Used by the handler to approve entitlements via the Procurement
+# API and to filter Pub/Sub events by product. You can find it under
+# APIs & Services > Endpoints, or by running:
+#   gcloud endpoints services list --project=$GOOGLE_CLOUD_PROJECT
+export SERVICE_CONTROL_SERVICE_NAME="<service-name>.endpoints.<project-id>.cloud.goog"
+
+# Required: fully-qualified Pub/Sub topic provided by Google Cloud Marketplace
+export PUBSUB_TOPIC="projects/<marketplace-project>/topics/<your-marketplace-topic>"
+
+# Required when using a fully-qualified topic: the subscription name is derived
+# from the topic by default (appending "-sub"), which produces an invalid name
+# when the topic is a fully-qualified path.
+export PUBSUB_SUBSCRIPTION="marketplace-events-sub"
+```
+
+If `SERVICE_CONTROL_SERVICE_NAME` is not set, the handler will skip
+entitlement approval and subscriptions will remain pending in the Google
+Cloud console.
+
+If `PUBSUB_TOPIC` is not set, the scripts default to creating a local topic
+named `marketplace-entitlements`, which does **not** receive events from the
+marketplace. Orders will remain stuck in `pending` status because
+entitlement approval events never reach the handler.
 
 ### 2. Run Setup Script
 
@@ -119,14 +197,17 @@ The setup script enables required APIs, creates service accounts (runtime + Pub/
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GOOGLE_CLOUD_PROJECT` | (required) | GCP project ID |
-| `GOOGLE_CLOUD_LOCATION` | `us-central1` | GCP region |
+| `GOOGLE_CLOUD_LOCATION` | `us-central1` | Cloud Run deployment region |
+| `VERTEXAI_LOCATION` | `global` | Vertex AI model location (use `global` for pay-as-you-go) |
 | `SERVICE_NAME` | `lightspeed-agent` | Cloud Run service name |
 | `SERVICE_ACCOUNT_NAME` | `${SERVICE_NAME}` | GCP service account name (allows a different name than the Cloud Run service) |
 | `HANDLER_SERVICE_NAME` | `marketplace-handler` | Marketplace handler Cloud Run service name |
 | `DB_INSTANCE_NAME` | `lightspeed-agent-db` | Cloud SQL instance name |
 | `VPC_CONNECTOR_NAME` | `lightspeed-redis-conn` | Serverless VPC Access connector for Redis |
 | `PUBSUB_INVOKER_NAME` | `pubsub-invoker` | Pub/Sub invoker SA name |
-| `PUBSUB_TOPIC` | `marketplace-entitlements` | Pub/Sub topic name for marketplace events |
+| `PUBSUB_TOPIC` | `marketplace-entitlements` | Pub/Sub topic for marketplace events. **Must** be set to the fully-qualified topic from Google Cloud Marketplace for production deployments. See [Set Environment Variables](#1-set-environment-variables). |
+| `PUBSUB_SUBSCRIPTION` | `${PUBSUB_TOPIC}-sub` | Pub/Sub subscription name. **Must** be set explicitly when `PUBSUB_TOPIC` is a fully-qualified path, since the default derivation produces an invalid name. |
+| `SERVICE_CONTROL_SERVICE_NAME` | - | Managed service name from the Producer Portal. **Required** for marketplace deployments — used for entitlement approval and product-level event filtering. |
 | `ENABLE_MARKETPLACE` | `true` | Create Pub/Sub invoker SA and topic for marketplace integration |
 
 ### 3. Set Up Cloud SQL Database
@@ -193,34 +274,57 @@ gcloud compute networks vpc-access connectors create lightspeed-redis-conn \
   --project=$GOOGLE_CLOUD_PROJECT
 ```
 
-**Step 2: Create a Redis instance** in the same VPC network:
+**Step 2: Create a Redis instance** in the same VPC network with in-transit encryption (TLS):
 
 ```bash
-# Create a Basic tier Redis instance (smallest, cost-effective for rate limiting)
+# Create a Basic tier Redis instance with TLS enabled
 gcloud redis instances create lightspeed-redis \
   --size=1 \
   --region=$GOOGLE_CLOUD_LOCATION \
   --redis-version=redis_7_0 \
   --network=default \
+  --transit-encryption-mode=SERVER_AUTHENTICATION \
   --project=$GOOGLE_CLOUD_PROJECT
 
-# Get the Redis host IP
+# Get the Redis host IP and port (TLS uses port 6378, not 6379)
 REDIS_HOST=$(gcloud redis instances describe lightspeed-redis \
   --region=$GOOGLE_CLOUD_LOCATION \
   --project=$GOOGLE_CLOUD_PROJECT \
   --format='value(host)')
-echo "Redis host: $REDIS_HOST"
+REDIS_PORT=$(gcloud redis instances describe lightspeed-redis \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --format='value(port)')
+echo "Redis host: $REDIS_HOST, port: $REDIS_PORT"
 ```
 
-**Step 3: Store the Redis URL in Secret Manager**:
+**Step 3: Download the Redis CA certificate and store it in Secret Manager**:
 
 ```bash
-# Redis uses port 6379 by default
-echo -n "redis://${REDIS_HOST}:6379/0" | \
+# Download the server CA certificate (required for TLS verification)
+gcloud redis instances describe lightspeed-redis \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --format='value(serverCaCerts[0].cert)' > /tmp/redis-ca.pem
+
+# Store the CA certificate in Secret Manager
+gcloud secrets create redis-ca-cert \
+  --data-file=/tmp/redis-ca.pem \
+  --project=$GOOGLE_CLOUD_PROJECT
+
+rm /tmp/redis-ca.pem
+```
+
+**Step 4: Store the Redis URL in Secret Manager** (using `rediss://` scheme for TLS):
+
+```bash
+# Note: "rediss://" (double s) enables TLS on the connection.
+# TLS-enabled instances use port 6378 (not the default 6379).
+echo -n "rediss://${REDIS_HOST}:${REDIS_PORT}/0" | \
   gcloud secrets versions add rate-limit-redis-url --data-file=- --project=$GOOGLE_CLOUD_PROJECT
 ```
 
-**Step 4: Set the VPC connector name** (if different from default):
+**Step 5: Set the VPC connector name** (if different from default):
 
 ```bash
 # Default is lightspeed-redis-conn; override if you used a different name
@@ -228,6 +332,82 @@ export VPC_CONNECTOR_NAME="lightspeed-redis-conn"
 ```
 
 See [Connect to Redis from Cloud Run](https://cloud.google.com/run/docs/integrate/redis-memorystore) for more details.
+
+#### Migrating an Existing Redis Instance to TLS
+
+Cloud Memorystore does not support enabling in-transit encryption on an existing instance — the `--transit-encryption-mode` flag is immutable after creation. To enable TLS you must create a new instance and cut over. The Redis data is entirely ephemeral (rate limiting sliding window counters), so there is nothing to migrate.
+
+**1. Create a new Redis instance with TLS:**
+
+```bash
+gcloud redis instances create lightspeed-redis-tls \
+  --size=1 \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --redis-version=redis_7_0 \
+  --network=default \
+  --transit-encryption-mode=SERVER_AUTHENTICATION \
+  --project=$GOOGLE_CLOUD_PROJECT
+
+REDIS_HOST=$(gcloud redis instances describe lightspeed-redis-tls \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --format='value(host)')
+REDIS_PORT=$(gcloud redis instances describe lightspeed-redis-tls \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --format='value(port)')
+```
+
+**2. Download the CA certificate and store it in Secret Manager:**
+
+```bash
+gcloud redis instances describe lightspeed-redis-tls \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --format='value(serverCaCerts[0].cert)' > /tmp/redis-ca.pem
+
+gcloud secrets create redis-ca-cert \
+  --data-file=/tmp/redis-ca.pem \
+  --project=$GOOGLE_CLOUD_PROJECT
+
+rm /tmp/redis-ca.pem
+```
+
+**3. Update the Redis URL secret to use `rediss://`** (TLS uses port 6378):
+
+```bash
+echo -n "rediss://${REDIS_HOST}:${REDIS_PORT}/0" | \
+  gcloud secrets versions add rate-limit-redis-url \
+    --data-file=- --project=$GOOGLE_CLOUD_PROJECT
+```
+
+**4. Redeploy the agent service** (picks up the new secret version, CA cert volume mount, and `RATE_LIMIT_REDIS_CA_CERT` env var from the updated `service.yaml`):
+
+```bash
+./deploy/cloudrun/deploy.sh --service agent
+```
+
+**5. Verify the agent is healthy:**
+
+```bash
+curl $(gcloud run services describe ${SERVICE_NAME:-lightspeed-agent} \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --format='value(status.url)')/health
+```
+
+**6. Delete the old Redis instance:**
+
+```bash
+gcloud redis instances delete lightspeed-redis \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT
+```
+
+**Notes:**
+
+- No downtime: Cloud Run rolls out the new revision alongside the old one. The old revision keeps using the previous `redis://` URL (pinned at deploy time) until it drains.
+- Rate limiting counters reset after the cutover (all sliding windows start fresh). This is harmless — users simply get a full quota again.
 
 ### 5. Configure Secrets
 
@@ -242,9 +422,11 @@ echo -n 'your-sso-client-secret' | \
   gcloud secrets versions add redhat-sso-client-secret --data-file=- --project=$GOOGLE_CLOUD_PROJECT
 
 # DCR (Dynamic Client Registration) - Required for Gemini Enterprise integration
-# Initial Access Token from Red Hat SSO (Keycloak) admin
-echo -n 'your-initial-access-token' | \
-  gcloud secrets versions add dcr-initial-access-token --data-file=- --project=$GOOGLE_CLOUD_PROJECT
+# GMA SSO API credentials for tenant creation
+echo -n 'your-gma-client-id' | \
+  gcloud secrets versions add gma-client-id --data-file=- --project=$GOOGLE_CLOUD_PROJECT
+echo -n 'your-gma-client-secret' | \
+  gcloud secrets versions add gma-client-secret --data-file=- --project=$GOOGLE_CLOUD_PROJECT
 
 # Fernet encryption key for DCR client secrets
 # Generate with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
@@ -260,9 +442,12 @@ echo -n "postgresql+asyncpg://insights:$MARKETPLACE_DB_PASSWORD@/lightspeed_agen
 echo -n "postgresql+asyncpg://sessions:$SESSION_DB_PASSWORD@/agent_sessions?host=/cloudsql/$CONNECTION_NAME" | \
   gcloud secrets versions add session-database-url --data-file=- --project=$GOOGLE_CLOUD_PROJECT
 
-# Rate limit Redis URL (required). As instructed in Redis Setup step 3 after creating the Redis instance.
+# Rate limit Redis URL (required). As instructed in Redis Setup steps 3-4 after creating the Redis instance.
+# TLS-enabled instances use port 6378 (not 6379). Read $REDIS_PORT from step 2.
 # REDIS_HOST=$(gcloud redis instances describe lightspeed-redis --region=$GOOGLE_CLOUD_LOCATION --project=$GOOGLE_CLOUD_PROJECT --format='value(host)')
-# echo -n "redis://${REDIS_HOST}:6379/0" | gcloud secrets versions add rate-limit-redis-url --data-file=- --project=$GOOGLE_CLOUD_PROJECT
+# REDIS_PORT=$(gcloud redis instances describe lightspeed-redis --region=$GOOGLE_CLOUD_LOCATION --project=$GOOGLE_CLOUD_PROJECT --format='value(port)')
+# echo -n "rediss://${REDIS_HOST}:${REDIS_PORT}/0" | gcloud secrets versions add rate-limit-redis-url --data-file=- --project=$GOOGLE_CLOUD_PROJECT
+# The CA certificate is stored separately (see Redis Setup step 3).
 ```
 
 ### 6. Copy MCP Image to GCR
@@ -328,9 +513,11 @@ export MARKETPLACE_HANDLER_URL="$HANDLER_URL"
 
 **Step 3: Deploy the agent**
 
-The deploy script automatically sets `AGENT_PROVIDER_URL`
+The deploy script automatically sets `AGENT_PROVIDER_URL` (agent base URL)
 and `MARKETPLACE_HANDLER_URL` on the agent service using the actual
-Cloud Run URLs after deployment.
+Cloud Run URLs after deployment. `AGENT_PROVIDER_ORGANIZATION_URL`
+(the provider's website, used as the JWT audience for DCR) is set in the
+YAML configs and does not change per deployment.
 
 ```bash
 ./deploy/cloudrun/deploy.sh --service agent --allow-unauthenticated
@@ -384,6 +571,7 @@ deployment without the script, substitute all `${...}` variables in the YAML bef
 ```bash
 sed -e "s|\${PROJECT_ID}|$GOOGLE_CLOUD_PROJECT|g" \
     -e "s|\${REGION}|$GOOGLE_CLOUD_LOCATION|g" \
+    -e "s|\${VERTEXAI_LOCATION}|${VERTEXAI_LOCATION:-global}|g" \
     -e "s|\${DB_INSTANCE_NAME}|${DB_INSTANCE_NAME:-lightspeed-agent-db}|g" \
     -e "s|\${VPC_CONNECTOR_NAME}|${VPC_CONNECTOR_NAME:-lightspeed-redis-conn}|g" \
     -e "s|\${SERVICE_NAME}|${SERVICE_NAME:-lightspeed-agent}|g" \
@@ -405,17 +593,79 @@ sed -e "s|\${PROJECT_ID}|$GOOGLE_CLOUD_PROJECT|g" \
 
 ### Rate Limiting (Redis)
 
-The agent uses Cloud Memorystore for Redis for distributed rate limiting. Required configuration:
+Both the agent and the marketplace handler use Cloud Memorystore for Redis for distributed rate limiting. The same Redis instance and configuration are shared by both services. Required configuration:
 
 | Variable | Source | Description |
 |----------|--------|-------------|
-| `RATE_LIMIT_REDIS_URL` | Secret `rate-limit-redis-url` | Redis connection URL (e.g. `redis://10.x.x.x:6379/0`) |
+| `RATE_LIMIT_REDIS_URL` | Secret `rate-limit-redis-url` | Redis connection URL (e.g. `rediss://10.x.x.x:6378/0`). Use `rediss://` (double s) for TLS. Note: TLS instances use port 6378, not 6379. |
+| `RATE_LIMIT_REDIS_CA_CERT` | Env (file path) | Path to the Redis server CA certificate for TLS verification (e.g. `/secrets/redis-ca-cert/latest`) |
 | `RATE_LIMIT_REDIS_TIMEOUT_MS` | Env | Redis operation timeout (default: 200) |
 | `RATE_LIMIT_KEY_PREFIX` | Env | Key prefix for rate limit keys |
 | `RATE_LIMIT_REQUESTS_PER_MINUTE` | Env | Max requests per minute per principal |
 | `RATE_LIMIT_REQUESTS_PER_HOUR` | Env | Max requests per hour per principal |
 
-The service uses a VPC connector to reach the Redis instance. Set `VPC_CONNECTOR_NAME` (default: `lightspeed-redis-conn`) when deploying. See [Rate Limiting — Testing](../../docs/rate-limiting.md#testing-rate-limiting) for how to validate rate limiting.
+Both services use a VPC connector to reach the Redis instance. Set `VPC_CONNECTOR_NAME` (default: `lightspeed-redis-conn`) when deploying. In-transit encryption (TLS) is enabled on the Memorystore instance; the CA certificate is mounted from Secret Manager as a volume (see `service.yaml` and `marketplace-handler.yaml`). See [Rate Limiting — Testing](../../docs/rate-limiting.md#testing-rate-limiting) for how to validate rate limiting.
+
+### MCP Output Size Guard
+
+MCP tools can return very large responses (e.g., listing all advisories or inventory systems),
+which inflate the LLM input context and may trigger Vertex AI token-per-minute (TPM) rate limits
+(HTTP 429 `RESOURCE_EXHAUSTED`).
+
+The agent includes an **MCP output size guard** that detects oversized tool results and replaces
+them with an actionable message. Instead of sending the full payload to the LLM, the agent tells
+the model the result was too large and asks it to guide the user toward narrowing down their query
+or using pagination.
+
+**Configuration:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOL_RESULT_MAX_CHARS` | `51200` | Maximum character length for MCP tool results. Results exceeding this are replaced with guidance. Set to `0` to disable. |
+
+**To adjust the limit on Cloud Run:**
+
+```bash
+# Allow larger results (e.g., 100K characters)
+gcloud run services update lightspeed-agent \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --set-env-vars TOOL_RESULT_MAX_CHARS=100000
+
+# Disable the guard entirely (not recommended — may cause 429 errors)
+gcloud run services update lightspeed-agent \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --set-env-vars TOOL_RESULT_MAX_CHARS=0
+```
+
+**How it works:**
+
+1. An MCP tool executes and returns a result
+2. The `MCPOutputSizeGuardPlugin` serializes the result and checks its character length
+3. If the result exceeds `TOOL_RESULT_MAX_CHARS`, it is replaced with:
+   ```json
+   {
+     "error": "tool_result_too_large",
+     "message": "The tool 'get_advisories' returned a result that is too large to process (270,000 characters, limit is 51,200). Please ask the user to narrow down their query or use pagination/filtering parameters to reduce the result size.",
+     "original_size_chars": 270000,
+     "limit_chars": 51200
+   }
+   ```
+4. The LLM receives this message and can inform the user to refine their request
+
+**Tuning tips:**
+
+- **51,200 characters** (default, 50 KiB) is a conservative limit that keeps input tokens well within
+  Vertex AI TPM quotas for `gemini-2.5-flash`
+- If you have higher TPM quotas, increase the limit to allow richer responses
+- The optimal limit depends on the model's context window and expected session length — longer
+  multi-turn sessions accumulate more context, leaving less room for individual tool results.
+  Short single-turn sessions can tolerate a higher limit.
+- Monitor the `Tool result too large` warning logs to see which tools trigger the guard
+  and how often
+
+See [Configuration — MCP Output Size Guard](../../docs/configuration.md#mcp-output-size-guard) for more details.
 
 ### MCP Server Sidecar
 
@@ -551,21 +801,11 @@ When the agent needs to access Insights data (e.g., system vulnerabilities, reco
 
 ### MCP Authentication
 
-The agent supports two modes for authenticating with the MCP server, determined
-by whether Lightspeed credentials are configured:
-
-| Mode | When | Headers sent to MCP |
-|------|------|---------------------|
-| **JWT pass-through** (default) | `LIGHTSPEED_CLIENT_ID/SECRET` not set | `Authorization: Bearer <caller's token>` |
-| **Lightspeed credentials** | `LIGHTSPEED_CLIENT_ID/SECRET` set | `lightspeed-client-id` + `lightspeed-client-secret` |
-
-**JWT pass-through** is the recommended mode. The caller's Red Hat SSO token
-is forwarded to the MCP server, which uses it to call console.redhat.com APIs
-on behalf of the user.
+The agent forwards the caller's JWT token to the MCP server via the
+`Authorization: Bearer` header. The MCP server uses this token to call
+console.redhat.com APIs on behalf of the user.
 
 ### Credential Flow
-
-**Mode A: JWT pass-through (default)**
 
 ```
 Client                     Agent                   MCP Server        console.redhat.com
@@ -574,7 +814,7 @@ Client                     Agent                   MCP Server        console.red
   │  Authorization: Bearer T │                         │                     │
   ├─────────────────────────►│                         │                     │
   │                          │  MCP tool call          │                     │
-  │                          │  Authorization: Bearer T|                     │
+  │                          │  Authorization: Bearer T│                     │
   │                          ├────────────────────────►│                     │
   │                          │                         │  API Request + T    │
   │                          │                         ├────────────────────►│
@@ -586,36 +826,18 @@ Client                     Agent                   MCP Server        console.red
   │◄─────────────────────────┤                         │                     │
 ```
 
-**Mode B: Lightspeed credentials (optional)**
-
-```
-Secret Manager                    MCP Server              console.redhat.com
-     │                               │                           │
-     │  LIGHTSPEED_CLIENT_ID         │                           │
-     │  LIGHTSPEED_CLIENT_SECRET     │                           │
-     ├──────────────────────────────►│                           │
-     │                               │   OAuth2 Token Request    │
-     │                               ├──────────────────────────►│
-     │                               │   Access Token            │
-     │                               │◄──────────────────────────┤
-     │                               │   API Request + Token     │
-     │                               ├──────────────────────────►│
-     │                               │   API Response            │
-     │                               │◄──────────────────────────┤
-```
-
 ## Authentication
 
-The agent uses **Red Hat SSO** (Keycloak) for authentication via **token
+The agent uses **Red Hat SSO** for authentication via **token
 introspection** (RFC 7662).  Requests to the A2A endpoint (POST /) require a
-Bearer token that is active and carries the `agent:insights` scope.
+Bearer token that is active and carries the `api.console` and `api.ocm` scopes.
 
 ### Authentication Flow
 
 ```
 ┌──────────┐    ┌───────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐
 │  Client  │    │Lightspeed Agt │    │ Red Hat SSO  │    │  MCP Server  │    │console.redhat.com│
-│(Gemini)  │    │  (port 8000)  │    │  (Keycloak)  │    │  (port 8080) │    │ (Insights APIs)  │
+│(Gemini)  │    │  (port 8000)  │    │ (Red Hat SSO)│    │  (port 8080) │    │ (Insights APIs)  │
 └────┬─────┘    └──────┬────────┘    └──────┬───────┘    └──────┬───────┘    └────────┬─────────┘
      │                 │                    │                   │                     │
      │  ── Obtain Token (directly from SSO) ──                 │                     │
@@ -631,11 +853,11 @@ Bearer token that is active and carries the `agent:insights` scope.
      │    Bearer token │                    │                   │                     │
      ├────────────────►│ 4. Introspect      │                   │                     │
      │                 │    token + check   │                   │                     │
-     │                 │    agent:insights  │                   │                     │
+     │                 │    required scopes │                   │                     │
      │                 ├───────────────────►│                   │                     │
      │                 │                    │                   │                     │
      │                 │ 5. MCP tool call   │                   │                     │
-     │                 │  + Bearer token (or Lightspeed creds)  │                     │
+     │                 │  + Bearer token    │                   │                     │
      │                 ├───────────────────────────────────────►│                     │
      │                 │                    │                   │ 6. Insights API     │
      │                 │                    │                   │    (using token)    │
@@ -650,7 +872,7 @@ Bearer token that is active and carries the `agent:insights` scope.
 
 **Credential sets:**
 - **Red Hat SSO credentials** (`RED_HAT_SSO_CLIENT_ID/SECRET`): Used by the agent as Resource Server credentials for token introspection (step 4)
-- **MCP authentication** (step 5): By default the caller's Bearer token is forwarded. If `LIGHTSPEED_CLIENT_ID/SECRET` are configured, those are sent instead (see [MCP Authentication](#mcp-authentication))
+- **MCP authentication** (step 5): The caller's Bearer token is forwarded to the MCP server (see [MCP Authentication](#mcp-authentication))
 
 ### Configuration
 
@@ -659,7 +881,9 @@ Bearer token that is active and carries the `agent:insights` scope.
 | `redhat-sso-client-id` | Resource Server client ID (used for token introspection) |
 | `redhat-sso-client-secret` | Resource Server client secret |
 | `MARKETPLACE_HANDLER_URL` | URL of the marketplace-handler service. Used to build the DCR endpoints in the AgentCard. If empty, falls back to `AGENT_PROVIDER_URL`. Set automatically by `deploy.sh`. |
-| `AGENT_REQUIRED_SCOPE` | OAuth scope required in tokens (default: `agent:insights`) |
+| `AGENT_PROVIDER_ORGANIZATION_URL` | Provider's organization website URL (default: `https://www.redhat.com`). Used in AgentCard `provider.url` and as the expected JWT audience for Google DCR `software_statement` validation. Set in YAML configs, not changed by `deploy.sh`. |
+| `AGENT_REQUIRED_SCOPE` | Comma-separated OAuth scopes required in tokens (default: `api.console,api.ocm`) |
+| `AGENT_ALLOWED_SCOPES` | Comma-separated allowlist of permitted scopes (default: `openid,profile,email,api.console,api.ocm`). Tokens with scopes outside this list are rejected (403). |
 
 ### Development Mode
 
@@ -784,6 +1008,227 @@ Follow the instructions to verify domain ownership and configure DNS.
 
 Once deployed, you can test the agent using a local proxy that handles Google Cloud Run authentication.
 
+> **Important:** When full authentication is enabled (the default on Cloud Run),
+> every A2A request must pass three validation steps:
+>
+> 1. **Token introspection** — The Bearer token must be active at Red Hat SSO
+> 2. **DCR client lookup** — The token's `client_id` (`azp` claim) must exist in the `dcr_clients` table
+> 3. **Entitlement check** — The DCR client's `order_id` must have an `active` entitlement in `marketplace_entitlements`
+>
+> Without steps 2 and 3, you will get `"No active order found for this client"` (403 Forbidden).
+> See [Authentication Setup for Testing](#authentication-setup-for-testing) below to configure
+> the required database records before sending A2A requests.
+
+### Authentication Setup for Testing
+
+#### Prerequisites
+
+Install the [Cloud SQL Auth Proxy](https://cloud.google.com/sql/docs/postgres/connect-auth-proxy)
+if you don't have it already, then start it and fetch database credentials:
+
+```bash
+# Install Cloud SQL Auth Proxy (one-time setup)
+# Linux (amd64):
+curl -o cloud-sql-proxy https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.15.2/cloud-sql-proxy.linux.amd64
+chmod +x cloud-sql-proxy
+
+# macOS (Apple Silicon):
+# curl -o cloud-sql-proxy https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.15.2/cloud-sql-proxy.darwin.arm64
+# chmod +x cloud-sql-proxy
+```
+
+```bash
+# Terminal 1: Start Cloud SQL Auth Proxy
+./cloud-sql-proxy --port 5432 \
+  ${GOOGLE_CLOUD_PROJECT}:${GOOGLE_CLOUD_LOCATION}:${DB_INSTANCE_NAME:-lightspeed-agent-db}
+```
+
+```bash
+# Terminal 2: Fetch credentials from Secret Manager
+CLOUD_DB_URL=$(gcloud secrets versions access latest \
+  --secret=database-url --project=$GOOGLE_CLOUD_PROJECT)
+DB_PASSWORD=$(echo "$CLOUD_DB_URL" | sed -n 's|.*://insights:\([^@]*\)@.*|\1|p')
+export DATABASE_URL="postgresql+asyncpg://insights:${DB_PASSWORD}@localhost:5432/lightspeed_agent"
+export DCR_ENCRYPTION_KEY=$(gcloud secrets versions access latest \
+  --secret=dcr-encryption-key --project=$GOOGLE_CLOUD_PROJECT)
+```
+
+#### Seed database records and get a token
+
+This seeds the database with a DCR client and entitlement that match your
+`ocm token`'s `azp` claim, allowing you to use `ocm token` directly for A2A
+requests.
+
+> **Why `ocm token`?** DCR clients created via the GMA API only support
+> `authorization_code` and `refresh_token` grants (the flows Gemini Enterprise
+> uses) — `client_credentials` is not enabled. The `ocm token` approach works
+> because it produces a valid Red Hat SSO token whose `azp` claim we map to a
+> seeded DCR client in the database.
+
+**1. Set scope requirements to match `ocm token`:**
+
+The `ocm token` carries `openid`, `roles`, and `web-origins` scopes — not the
+`api.console` / `api.ocm` scopes the agent requires by default. Temporarily set
+both required and allowed scopes to match the ocm token on Cloud Run:
+
+```bash
+gcloud run services update lightspeed-agent \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --update-env-vars="AGENT_REQUIRED_SCOPE=openid,roles,web-origins" \
+  --update-env-vars="AGENT_ALLOWED_SCOPES=openid,roles,web-origins"
+```
+
+> **Remember to restore these after testing** — see
+> [Cleanup test records](#cleanup-test-records) below.
+
+**2. Login to OCM and get the token's client_id:**
+
+```bash
+ocm login --use-auth-code
+
+# Decode the token's azp (authorized party) claim — this is the client_id
+# the auth middleware will look up in the dcr_clients table
+OCM_CLIENT_ID=$(ocm token | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.azp')
+echo "OCM client_id (azp): $OCM_CLIENT_ID"
+```
+
+**3. Choose an order ID and seed the DCR client:**
+
+```bash
+export TEST_ORDER_ID="test-order-$(date +%s)"
+export TEST_ACCOUNT_ID="test-account-001"
+
+python scripts/seed_dcr_clients.py seed \
+  --client-id "$OCM_CLIENT_ID" \
+  --client-secret "placeholder-not-used-for-ocm" \
+  --order-id "$TEST_ORDER_ID" \
+  --account-id "$TEST_ACCOUNT_ID"
+```
+
+**4. Seed the matching entitlement record:**
+
+```bash
+python3 -c "
+import asyncio, os
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
+async def main():
+    engine = create_async_engine(os.environ['DATABASE_URL'])
+    async with engine.begin() as conn:
+        await conn.execute(text('''
+            INSERT INTO marketplace_entitlements (id, account_id, provider_id, state, metadata)
+            VALUES (:id, :account_id, 'test-provider', 'active', '{}')
+            ON CONFLICT (id) DO UPDATE SET state = 'active'
+        '''), {'id': os.environ['TEST_ORDER_ID'], 'account_id': os.environ['TEST_ACCOUNT_ID']})
+    print(f'Entitlement seeded: order_id={os.environ[\"TEST_ORDER_ID\"]}')
+    await engine.dispose()
+
+asyncio.run(main())
+"
+```
+
+**5. Verify the records:**
+
+```bash
+# Check DCR client
+python scripts/seed_dcr_clients.py list
+
+# Check entitlement
+python3 -c "
+import asyncio, os
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
+async def main():
+    engine = create_async_engine(os.environ['DATABASE_URL'])
+    async with engine.connect() as conn:
+        result = await conn.execute(text('''
+            SELECT id, account_id, state FROM marketplace_entitlements
+            WHERE id = :id
+        '''), {'id': os.environ['TEST_ORDER_ID']})
+        row = result.first()
+        if row:
+            print(f'Entitlement: id={row.id}, account_id={row.account_id}, state={row.state}')
+        else:
+            print('ERROR: Entitlement not found')
+    await engine.dispose()
+
+asyncio.run(main())
+"
+```
+
+**6. Get your token:**
+
+```bash
+export RED_HAT_TOKEN=$(ocm token)
+```
+
+Your `RED_HAT_TOKEN` is now ready. Quick smoke test against the deployed agent:
+
+```bash
+AGENT_URL=$(gcloud run services describe lightspeed-agent \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --format='value(status.url)')
+
+curl -X POST $AGENT_URL/ \
+  -H "Authorization: Bearer $RED_HAT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "messageId": "1",
+        "role": "user",
+        "parts": [{"type": "text", "text": "Can you give me the systems affected by CVE-2023-49569"}]
+      }
+    },
+    "id": "1"
+  }' | jq .
+```
+
+For more testing options, see [Test A2A Requests with Local Proxy](#test-a2a-requests-with-local-proxy)
+or [Test with A2A Inspector](#test-with-a2a-inspector) below.
+
+#### Cleanup test records
+
+When done testing, restore scope settings and remove the seeded database records.
+The database cleanup requires the Cloud SQL Auth Proxy and environment variables
+from [Prerequisites](#prerequisites) above.
+
+```bash
+# 1. Restore scope requirements
+gcloud run services update lightspeed-agent \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --update-env-vars="AGENT_REQUIRED_SCOPE=api.console,api.ocm" \
+  --update-env-vars="AGENT_ALLOWED_SCOPES=openid,profile,email,api.console,api.ocm"
+
+# 2. Remove DCR client
+python scripts/seed_dcr_clients.py delete --order-id "$TEST_ORDER_ID" --confirm
+
+# 3. Remove entitlement
+python3 -c "
+import asyncio, os
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
+async def main():
+    engine = create_async_engine(os.environ['DATABASE_URL'])
+    async with engine.begin() as conn:
+        result = await conn.execute(text('''
+            DELETE FROM marketplace_entitlements WHERE id = :id
+        '''), {'id': os.environ['TEST_ORDER_ID']})
+        print(f'Deleted {result.rowcount} entitlement(s)')
+    await engine.dispose()
+
+asyncio.run(main())
+"
+```
+
 ### Test Agent Card
 
 Verify the agent is running and accessible:
@@ -837,20 +1282,13 @@ gcloud run services update lightspeed-agent \
 
 **3. Get a Red Hat SSO access token:**
 
-In a new terminal, use one of these methods:
-
-**Option A: Using `ocm` CLI (Easiest)**
-
-If you have the [ocm CLI](https://github.com/openshift-online/ocm-cli) installed:
+Follow the [Authentication Setup for Testing](#authentication-setup-for-testing)
+section above to configure database records and obtain a token (`RED_HAT_TOKEN`).
+You must complete that setup first — without it, the agent will reject requests
+with `"No active order found for this client"` (403).
 
 ```bash
-# Login to OCM (if not already logged in)
-ocm login --use-auth-code
-
-# Get access token
-export RED_HAT_TOKEN=$(ocm token)
-
-# Verify token is valid
+# Verify token is set and valid (should show decoded JWT payload)
 echo $RED_HAT_TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq .
 ```
 
@@ -925,7 +1363,8 @@ The [A2A Inspector](https://github.com/a2aproject/a2a-inspector) provides a web-
 ```bash
 # Make sure the proxy is running (from step 1 above)
 # Make sure AGENT_PROVIDER_URL is set to http://localhost:8099 (from step 2 above)
-# Make sure you have a Red Hat SSO token (from step 3 above)
+# Make sure you have completed the Authentication Setup for Testing (from step 3 above)
+# Make sure RED_HAT_TOKEN is set (via ocm token or client_credentials grant)
 ```
 
 **2. Start A2A Inspector:**
@@ -946,7 +1385,7 @@ In the A2A Inspector web UI (usually at `http://localhost:5001`):
 1. **Agent URL**: Enter `http://localhost:8099/`
 2. **Authentication**:
    - Select "Bearer Token" or "OAuth"
-   - Paste your Red Hat SSO token: `$(ocm token)`
+   - Paste your `RED_HAT_TOKEN` (obtained via [Authentication Setup for Testing](#authentication-setup-for-testing))
 3. Click "Connect" - it will fetch the agent card from `http://localhost:8099/.well-known/agent-card.json`
 
 The A2A Inspector will read the agent card and see `"url": "http://localhost:8099/"`, which points back to your local proxy. All messages will flow through the proxy to Cloud Run.
@@ -962,9 +1401,38 @@ The inspector will send properly formatted JSON-RPC requests with `messageId` fi
 
 ### Cleanup After Testing
 
-When you're done testing, clean up the local proxy and restore the production configuration.
+When you're done testing, clean up the local proxy, restore the production
+configuration, and remove any test database records.
 
-**1. Restore AGENT_PROVIDER_URL to the real Cloud Run URL:**
+**1. Remove test database records:**
+
+Follow the [Cleanup test records](#cleanup-test-records) steps in the
+Authentication Setup section to remove any DCR clients and entitlements you
+seeded. This requires the Cloud SQL Auth Proxy to still be running.
+
+```bash
+# Remove seeded DCR client and entitlement
+python scripts/seed_dcr_clients.py delete --order-id "$TEST_ORDER_ID" --confirm
+
+python3 -c "
+import asyncio, os
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
+async def main():
+    engine = create_async_engine(os.environ['DATABASE_URL'])
+    async with engine.begin() as conn:
+        result = await conn.execute(text('''
+            DELETE FROM marketplace_entitlements WHERE id = :id
+        '''), {'id': os.environ['TEST_ORDER_ID']})
+        print(f'Deleted {result.rowcount} entitlement(s)')
+    await engine.dispose()
+
+asyncio.run(main())
+"
+```
+
+**2. Restore AGENT_PROVIDER_URL to the real Cloud Run URL:**
 
 ```bash
 # Get the actual Cloud Run service URL
@@ -985,11 +1453,11 @@ curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
 # Should show: https://lightspeed-agent-xxxxx.run.app/
 ```
 
-**2. Stop the proxy:**
+**3. Stop the proxy:**
 
 Press `Ctrl+C` in the terminal where the proxy is running.
 
-**3. Clean up port (if needed):**
+**4. Clean up port (if needed):**
 
 If the port is still in use:
 
@@ -1020,11 +1488,9 @@ If you prefer to test without the proxy, you'll need to:
      --role="roles/run.invoker"
    ```
 
-2. **Test directly** with the Cloud Run URL:
+2. **Test directly** with the Cloud Run URL (requires [auth setup](#authentication-setup-for-testing)):
    ```bash
-   # Get Red Hat SSO token (using ocm or OAuth flow)
-   export RED_HAT_TOKEN=$(ocm token)
-
+   # RED_HAT_TOKEN must be set via the Authentication Setup for Testing section
    curl -X POST $AGENT_URL/ \
      -H "Authorization: Bearer $RED_HAT_TOKEN" \
      -H "Content-Type: application/json" \
@@ -1051,9 +1517,7 @@ If you prefer to test without the proxy, you'll need to:
 This usually means you're testing the endpoint without proper authentication or the request format is incorrect:
 
 ```bash
-# Make sure you're using the proxy and have a valid token
-export RED_HAT_TOKEN=$(ocm token)
-
+# Make sure you have a valid token (see Authentication Setup for Testing)
 # Verify token is valid (should show decoded JWT payload)
 echo $RED_HAT_TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq .
 
@@ -1062,10 +1526,53 @@ echo $RED_HAT_TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq .
 gcloud run services proxy lightspeed-agent --region=us-central1 --port=8080
 ```
 
+**"No active order found for this client"** (403 Forbidden)
+
+The token is valid but the auth middleware cannot find a matching DCR client or
+active entitlement in the database. This is the most common issue when testing.
+
+The middleware performs these lookups:
+1. Looks up the token's `azp` (client_id) in the `dcr_clients` table
+2. Uses the `order_id` from that record to check `marketplace_entitlements`
+3. Verifies the entitlement `state` is `active`
+
+Fix: Complete the [Authentication Setup for Testing](#authentication-setup-for-testing)
+to seed the required database records.
+
+```bash
+# Decode your token to see the azp claim being looked up
+echo $RED_HAT_TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.azp'
+
+# Check if a DCR client exists for that azp
+python scripts/seed_dcr_clients.py list
+
+# Check if the entitlement exists and is active (replace <order-id>)
+python3 -c "
+import asyncio, os
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
+async def main():
+    engine = create_async_engine(os.environ['DATABASE_URL'])
+    async with engine.connect() as conn:
+        result = await conn.execute(text('''
+            SELECT id, state FROM marketplace_entitlements WHERE id = :id
+        '''), {'id': '<order-id>'})
+        row = result.first()
+        if row:
+            print(f'Entitlement: id={row.id}, state={row.state}')
+        else:
+            print('ERROR: No entitlement found for this order_id')
+    await engine.dispose()
+
+asyncio.run(main())
+"
+```
+
 **"Invalid Authorization header format"**
 
 The agent expects a Red Hat SSO Bearer token, not a Google Cloud identity token. Make sure:
-- You're using `ocm token` or completing the OAuth flow
+- You're using a token from the [Authentication Setup](#authentication-setup-for-testing)
 - The token is a valid JWT from Red Hat SSO
 - You're including it as: `-H "Authorization: Bearer $RED_HAT_TOKEN"`
 
@@ -1089,37 +1596,61 @@ The A2A protocol requires specific fields. A common mistake is omitting
 }
 ```
 
-**"Token is missing required scope: agent:insights"**
+**"Token is missing required scope(s): api.console, api.ocm"**
 
-The agent requires the `agent:insights` scope in the access token by
-default. If your Red Hat SSO client is not configured to issue this scope,
+The agent requires the `api.console` and `api.ocm` scopes in the access token
+by default. If your Red Hat SSO client is not configured to issue these scopes,
 you will see:
 
 ```json
-{"jsonrpc":"2.0","error":{"code":-32003,"message":"Forbidden","data":{"detail":"Token is missing required scope: agent:insights"}},"id":null}
+{"jsonrpc":"2.0","error":{"code":-32003,"message":"Forbidden","data":{"detail":"Token is missing required scope(s): api.console, api.ocm"}},"id":null}
 ```
 
-To temporarily disable the scope check for testing, set `AGENT_REQUIRED_SCOPE`
-to an empty string on the agent service:
+To temporarily adjust the required scopes for testing (e.g. when using
+`ocm token` which carries `openid,roles,web-origins`), set both
+`AGENT_REQUIRED_SCOPE` and `AGENT_ALLOWED_SCOPES` to match the token's scopes:
 
 ```bash
 gcloud run services update ${SERVICE_NAME:-lightspeed-agent} \
   --region=$GOOGLE_CLOUD_LOCATION \
   --project=$GOOGLE_CLOUD_PROJECT \
-  --update-env-vars="AGENT_REQUIRED_SCOPE="
+  --update-env-vars="AGENT_REQUIRED_SCOPE=openid,roles,web-origins" \
+  --update-env-vars="AGENT_ALLOWED_SCOPES=openid,roles,web-origins"
 ```
 
-To restore the scope requirement:
+To restore the default scope requirements:
 
 ```bash
 gcloud run services update ${SERVICE_NAME:-lightspeed-agent} \
   --region=$GOOGLE_CLOUD_LOCATION \
   --project=$GOOGLE_CLOUD_PROJECT \
-  --update-env-vars="AGENT_REQUIRED_SCOPE=agent:insights"
+  --update-env-vars="AGENT_REQUIRED_SCOPE=api.console,api.ocm" \
+  --update-env-vars="AGENT_ALLOWED_SCOPES=openid,profile,email,api.console,api.ocm"
+```
+
+> **Note:** Both `AGENT_REQUIRED_SCOPE` and `AGENT_ALLOWED_SCOPES` must not be
+> empty in production environments. The agent validates at startup that required
+> scopes are a subset of allowed scopes.
+
+These settings are also configurable in `service.yaml`.
+
+**"Token carries disallowed scope(s): ..."**
+
+The agent enforces a scope allowlist (`AGENT_ALLOWED_SCOPES`) to prevent tokens
+with elevated privileges from being forwarded to downstream services.  If the
+token carries scopes not in the allowlist, you will see a 403 error.
+
+Add the missing scope(s) to the allowlist:
+
+```bash
+gcloud run services update ${SERVICE_NAME:-lightspeed-agent} \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --update-env-vars="AGENT_ALLOWED_SCOPES=openid,profile,email,api.console,api.ocm,your.extra.scope"
 ```
 
 This setting is also configurable in `service.yaml` via the
-`AGENT_REQUIRED_SCOPE` environment variable.
+`AGENT_ALLOWED_SCOPES` environment variable.
 
 **Empty response or connection refused**
 
@@ -1135,50 +1666,31 @@ This setting is also configurable in `service.yaml` via the
 ## Testing DCR on Cloud Run
 
 This section explains how to test the DCR (Dynamic Client Registration) flow
-against a deployed marketplace handler. Two options are available:
-
-- **Option A: Static Credentials** — no Keycloak needed, caller provides
-  `client_id` and `client_secret` in the DCR request body
-- **Option B: Real DCR with Keycloak on Cloud Run** — exercises the full flow
-  with a temporary Keycloak instance creating real OAuth clients
+against a deployed marketplace handler.
 
 ```
-Option A: Static Credentials              Option B: Real DCR with Keycloak
-
-┌──────────────┐                         ┌──────────────┐
-│  Test Script │                         │  Test Script │
-│  (local)     │                         │  (local)     │
-└──────┬───────┘                         └──────┬───────┘
-       │ POST /dcr                              │ POST /dcr
-       │ (software_statement JWT                │ (software_statement JWT)
-       │  + client_id + client_secret)          │ + Cloud Run ID token
-       │ + Cloud Run ID token                   │
-       ▼                                        ▼
-┌──────────────────────┐                 ┌──────────────────────┐
-│  Marketplace Handler │                 │  Marketplace Handler │
-│  (Cloud Run)         │                 │  (Cloud Run)         │
-│                      │                 │                      │
-│  DCR_ENABLED=false   │                 │  DCR_ENABLED=true    │
-│  Validates, stores   │                 │                      │
-│  and returns creds   │                 └──────────┬───────────┘
-└──────────────────────┘                            │ POST /clients-registrations
-                                                    │ (Bearer IAT)
-                                                    ▼
-                                         ┌──────────────────────┐
-                                         │  Keycloak            │
-                                         │  (Cloud Run)         │
-                                         │                      │
-                                         │  --allow-unauth      │
-                                         │  (required: handler  │
-                                         │   sends IAT in       │
-                                         │   Authorization hdr) │
-                                         └──────────────────────┘
+┌──────────────┐
+│  Test Script │
+│  (local)     │
+└──────┬───────┘
+       │ POST /dcr
+       │ (software_statement JWT)
+       │ + Cloud Run ID token
+       ▼
+┌──────────────────────┐         ┌──────────────────┐
+│  Marketplace Handler │────────>│  Red Hat SSO      │
+│  (Cloud Run)         │         │  (GMA SSO API)    │
+│                      │<────────│  Creates tenant   │
+│  Validates JWT,      │         └──────────────────┘
+│  creates tenant,     │
+│  returns creds       │
+└──────────────────────┘
 ```
 
-Both options require `SKIP_JWT_VALIDATION=true` on the handler to accept test
+Testing requires `SKIP_JWT_VALIDATION=true` on the handler to accept test
 JWTs not signed by Google's production `cloud-agentspace` service account.
 
-Both options also require a signing service account. Create one if you don't
+Testing also requires a signing service account. Create one if you don't
 have one already:
 
 ```bash
@@ -1195,14 +1707,9 @@ gcloud iam service-accounts keys create dcr-test-key.json \
   --project=$GOOGLE_CLOUD_PROJECT
 ```
 
-### Option A: Static Credentials (No Keycloak)
+### Running the DCR Test
 
-This mode skips Keycloak client creation. The caller provides `client_id` and
-`client_secret` in the DCR request body alongside the `software_statement`.
-The handler validates them (skipped with `SKIP_JWT_VALIDATION=true`), encrypts
-and stores them linked to the order, and returns them. No pre-seeding required.
-
-**1. Configure the handler:**
+**1. Configure the handler for testing:**
 
 ```bash
 # Generate and store Fernet encryption key (if not already set)
@@ -1216,11 +1723,10 @@ gcloud run services update marketplace-handler \
   --region=$GOOGLE_CLOUD_LOCATION \
   --project=$GOOGLE_CLOUD_PROJECT \
   --update-env-vars="\
-DCR_ENABLED=false,\
 SKIP_JWT_VALIDATION=true"
 ```
 
-**2. Run the test script with static credentials:**
+**2. Run the test script:**
 
 ```bash
 HANDLER_URL=$(gcloud run services describe marketplace-handler \
@@ -1230,8 +1736,6 @@ HANDLER_URL=$(gcloud run services describe marketplace-handler \
 
 export MARKETPLACE_HANDLER_URL=$HANDLER_URL
 export TEST_SA_KEY_FILE=dcr-test-key.json
-export TEST_CLIENT_ID=test-client-id
-export TEST_CLIENT_SECRET=test-client-secret
 # Generate a fresh order ID for each test run
 export TEST_ORDER_ID="order-$(uuidgen || python3 -c 'import uuid; print(uuid.uuid4())')"
 # Don't set SKIP_CLOUD_RUN_AUTH -- script fetches an ID token automatically
@@ -1239,9 +1743,9 @@ export TEST_ORDER_ID="order-$(uuidgen || python3 -c 'import uuid; print(uuid.uui
 python scripts/test_deployed_dcr.py
 ```
 
-The script sends `client_id` and `client_secret` in the request body. The
-handler stores them and returns them. The second request verifies idempotency
-(same credentials returned for the same order).
+The handler creates OAuth tenant credentials via the GMA SSO API and returns
+them. The second request verifies idempotency (same credentials returned for
+the same order).
 
 > **Note:** If the handler was deployed with `--allow-unauthenticated`, you can
 > set `export SKIP_CLOUD_RUN_AUTH=true` to skip ID token authentication.
@@ -1253,16 +1757,14 @@ gcloud run services update marketplace-handler \
   --region=$GOOGLE_CLOUD_LOCATION \
   --project=$GOOGLE_CLOUD_PROJECT \
   --update-env-vars="\
-DCR_ENABLED=true,\
 SKIP_JWT_VALIDATION=false"
 ```
 
 #### Admin Tool: seed_dcr_clients.py
 
-The `seed_dcr_clients.py` script is still available as an admin tool for
+The `seed_dcr_clients.py` script is available as an admin tool for
 managing DCR client records in the database (listing, deleting, or bulk
-inserting credentials). It is no longer required as a prerequisite for the
-static credentials flow.
+inserting credentials).
 
 ```bash
 # Connect to Cloud SQL first (requires Cloud SQL Auth Proxy)
@@ -1283,467 +1785,6 @@ python scripts/seed_dcr_clients.py list
 python scripts/seed_dcr_clients.py delete --order-id order-12345 --confirm
 ```
 
-### Option B: Real DCR with Keycloak on Cloud Run
-
-This mode exercises the full DCR flow — real OAuth client creation in a
-temporary Keycloak instance on Cloud Run.
-
-#### 1. Copy the Keycloak Image to GCR
-
-Cloud Run doesn't support pulling images from Quay.io directly. Copy the
-Keycloak image to Google Container Registry (GCR):
-
-```bash
-# Pull from Quay.io
-docker pull quay.io/keycloak/keycloak:26.0
-
-# Tag for GCR
-docker tag quay.io/keycloak/keycloak:26.0 \
-  gcr.io/$GOOGLE_CLOUD_PROJECT/keycloak:26.0
-
-# Push to GCR
-docker push gcr.io/$GOOGLE_CLOUD_PROJECT/keycloak:26.0
-```
-
-#### 2. Deploy Keycloak on Cloud Run
-
-The service **must** allow unauthenticated access. The marketplace handler sends
-`Authorization: Bearer <IAT>` (the Keycloak Initial Access Token) when calling
-the DCR endpoint. If Cloud Run IAM authentication is enabled, it intercepts this
-header expecting a Google ID token and rejects the request with a 401 before it
-ever reaches Keycloak.
-
-Since the service will be publicly accessible, generate a strong admin password:
-
-```bash
-# Generate a random admin password
-KC_ADMIN_PASSWORD=$(python3 -c "import secrets; print(secrets.token_urlsafe(24))")
-echo "Keycloak admin password: $KC_ADMIN_PASSWORD"
-# Save this — you'll need it for the admin API calls below
-```
-
-Deploy the service:
-
-```bash
-gcloud run deploy keycloak-test \
-  --image=gcr.io/$GOOGLE_CLOUD_PROJECT/keycloak:26.0 \
-  --args="start-dev" \
-  --port=8080 \
-  --set-env-vars="KC_BOOTSTRAP_ADMIN_USERNAME=admin,KC_BOOTSTRAP_ADMIN_PASSWORD=$KC_ADMIN_PASSWORD,KC_PROXY_HEADERS=xforwarded,KC_HTTP_ENABLED=true" \
-  --min-instances=1 \
-  --max-instances=1 \
-  --memory=1Gi \
-  --cpu=1 \
-  --region=$GOOGLE_CLOUD_LOCATION \
-  --project=$GOOGLE_CLOUD_PROJECT \
-  --allow-unauthenticated
-```
-
-> **Note:** `--allow-unauthenticated` requires `run.services.setIamPolicy`
-> permission. If you get a `PERMISSION_DENIED` error, ask a project admin to
-> run the deploy command above or grant you `roles/run.admin` on the project.
->
-> **Security:** Delete this service after testing (see step 7). Do not leave a
-> publicly accessible Keycloak instance running.
->
-> **Why `KC_PROXY_HEADERS=xforwarded`?** Cloud Run terminates HTTPS and forwards
-> HTTP to the container. This setting tells Keycloak to trust the `X-Forwarded-*`
-> headers so it generates `https://` URLs in tokens and discovery endpoints.
->
-> **Why `--min-instances=1`?** Keycloak's `start-dev` mode uses an in-memory H2
-> database. Data is lost on cold starts, so keep at least one instance alive.
-
-#### 3. Get the Keycloak URL
-
-```bash
-KEYCLOAK_URL=$(gcloud run services describe keycloak-test \
-  --region=$GOOGLE_CLOUD_LOCATION \
-  --project=$GOOGLE_CLOUD_PROJECT \
-  --format='value(status.url)')
-echo "Keycloak URL: $KEYCLOAK_URL"
-```
-
-Verify it's accessible:
-
-```bash
-curl -s "$KEYCLOAK_URL/realms/master" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['realm'])"
-# Should print: master
-```
-
-#### 4. Create a Test Realm and Generate an IAT
-
-```bash
-# Get admin token
-ADMIN_TOKEN=$(curl -s -X POST \
-  "$KEYCLOAK_URL/realms/master/protocol/openid-connect/token" \
-  -d "client_id=admin-cli" \
-  -d "username=admin" \
-  -d "password=$KC_ADMIN_PASSWORD" \
-  -d "grant_type=password" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-
-# Create test realm
-curl -s -X POST "$KEYCLOAK_URL/admin/realms" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"realm": "test-realm", "enabled": true}'
-
-# Generate Initial Access Token (IAT) for DCR
-IAT=$(curl -s -X POST \
-  "$KEYCLOAK_URL/admin/realms/test-realm/clients-initial-access" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"count": 100, "expiration": 86400}' \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
-echo "Initial Access Token: $IAT"
-```
-
-#### 5. Create the `agent:insights` Scope and Resource Server Client
-
-The agent validates tokens via introspection and checks for the `agent:insights`
-scope.  The scope must exist in the realm **before** DCR creates clients that
-reference it.
-
-**Create the `agent:insights` client scope:**
-
-```bash
-# Get a fresh admin token (the one from step 4 expires after 60s)
-ADMIN_TOKEN=$(curl -s -X POST \
-  "$KEYCLOAK_URL/realms/master/protocol/openid-connect/token" \
-  -d "client_id=admin-cli" \
-  -d "username=admin" \
-  -d "password=$KC_ADMIN_PASSWORD" \
-  -d "grant_type=password" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-
-# Create the scope
-curl -s -X POST "$KEYCLOAK_URL/admin/realms/test-realm/client-scopes" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "agent:insights",
-    "protocol": "openid-connect",
-    "attributes": {"include.in.token.scope": "true"}
-  }'
-
-# Allow agent:insights in the DCR client registration policy.
-# Keycloak restricts which scopes can be requested during DCR.
-# Get the "authenticated" Allowed Client Scopes policy and add
-# agent:insights to it.
-POLICY=$(curl -s \
-  "$KEYCLOAK_URL/admin/realms/test-realm/components?type=org.keycloak.services.clientregistration.policy.ClientRegistrationPolicy" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  | python3 -c "
-import sys, json
-for p in json.load(sys.stdin):
-    if p.get('providerId') == 'allowed-client-templates' and p.get('subType') == 'authenticated':
-        p['config']['allowed-client-scopes'] = ['agent:insights']
-        print(json.dumps(p))
-        break
-")
-POLICY_ID=$(echo "$POLICY" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-
-curl -s -X PUT \
-  "$KEYCLOAK_URL/admin/realms/test-realm/components/$POLICY_ID" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "$POLICY"
-```
-
-**Create the Resource Server client** (provides `RED_HAT_SSO_CLIENT_ID` / `SECRET`):
-
-```bash
-# Create the client
-curl -s -X POST "$KEYCLOAK_URL/admin/realms/test-realm/clients" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "clientId": "lightspeed-agent",
-    "enabled": true,
-    "clientAuthenticatorType": "client-secret",
-    "serviceAccountsEnabled": true,
-    "directAccessGrantsEnabled": false
-  }'
-
-# Get the client UUID
-CLIENT_UUID=$(curl -s "$KEYCLOAK_URL/admin/realms/test-realm/clients?clientId=lightspeed-agent" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
-
-# Get the client secret
-CLIENT_SECRET=$(curl -s "$KEYCLOAK_URL/admin/realms/test-realm/clients/$CLIENT_UUID/client-secret" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['value'])")
-
-echo "RED_HAT_SSO_CLIENT_ID=lightspeed-agent"
-echo "RED_HAT_SSO_CLIENT_SECRET=$CLIENT_SECRET"
-```
-
-**Assign `agent:insights` to the Resource Server client:**
-
-```bash
-# Get the scope UUID
-SCOPE_UUID=$(curl -s "$KEYCLOAK_URL/admin/realms/test-realm/client-scopes" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  | python3 -c "import sys,json; print([s['id'] for s in json.load(sys.stdin) if s['name']=='agent:insights'][0])")
-
-# Add as optional scope to the client
-curl -s -X PUT \
-  "$KEYCLOAK_URL/admin/realms/test-realm/clients/$CLIENT_UUID/optional-client-scopes/$SCOPE_UUID" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Grant `manage-clients` role to the Resource Server service account:**
-
-Keycloak's OIDC DCR endpoint does not enable `serviceAccountsEnabled` on
-newly created clients.  After DCR, the agent uses the Admin API to fix
-this, which requires the `manage-clients` role.
-
-```bash
-# Get the service account user for lightspeed-agent
-SA_USER_ID=$(curl -s \
-  "$KEYCLOAK_URL/admin/realms/test-realm/clients/$CLIENT_UUID/service-account-user" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-
-# Get the realm-management client UUID
-RM_UUID=$(curl -s \
-  "$KEYCLOAK_URL/admin/realms/test-realm/clients?clientId=realm-management" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
-
-# Get the manage-clients role definition
-MANAGE_CLIENTS_ROLE=$(curl -s \
-  "$KEYCLOAK_URL/admin/realms/test-realm/clients/$RM_UUID/roles/manage-clients" \
-  -H "Authorization: Bearer $ADMIN_TOKEN")
-
-# Assign the role to the service account
-curl -s -X POST \
-  "$KEYCLOAK_URL/admin/realms/test-realm/users/$SA_USER_ID/role-mappings/clients/$RM_UUID" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "[$MANAGE_CLIENTS_ROLE]"
-```
-
-Store the client credentials in Secret Manager:
-
-```bash
-echo -n "lightspeed-agent" | \
-  gcloud secrets versions add redhat-sso-client-id \
-    --data-file=- --project=$GOOGLE_CLOUD_PROJECT
-
-echo -n "$CLIENT_SECRET" | \
-  gcloud secrets versions add redhat-sso-client-secret \
-    --data-file=- --project=$GOOGLE_CLOUD_PROJECT
-```
-
-> **Note:** Keycloak assigns the `agent:insights` scope to DCR-created
-> clients because the DCR request includes `"scope": "agent:insights"` and
-> the scope is in the Allowed Client Scopes registration policy (configured
-> above).  However, Keycloak does **not** enable `serviceAccountsEnabled`
-> from the DCR `grant_types` field.  After DCR, the agent automatically
-> enables it via the Admin API (using the `manage-clients` role granted
-> above).
-
-#### 6. Configure the Marketplace Handler and Agent
-
-Update the secrets in Secret Manager first, then update the service env vars.
-The `gcloud run services update` command deploys a new revision that picks up
-both the env var changes and the updated secrets — no separate restart is needed.
-
-**Important:** Update secrets **before** the env vars, because the env var
-update triggers the new revision deployment.
-
-**Marketplace handler** (handles DCR requests):
-
-```bash
-# 1. Store IAT in Secret Manager
-echo -n "$IAT" | \
-  gcloud secrets versions add dcr-initial-access-token \
-    --data-file=- --project=$GOOGLE_CLOUD_PROJECT
-
-# 2. Generate and store Fernet encryption key (if not already set)
-FERNET_KEY=$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')
-echo -n "$FERNET_KEY" | \
-  gcloud secrets versions add dcr-encryption-key \
-    --data-file=- --project=$GOOGLE_CLOUD_PROJECT
-
-# 3. Update handler env vars (this deploys a new revision, picking up the
-#    updated secrets above and pointing the handler to the test Keycloak)
-#    RED_HAT_SSO_CLIENT_ID/SECRET are read from Secret Manager (updated in
-#    step 5) — do NOT pass them as --update-env-vars or Cloud Run will
-#    reject the conflicting type.
-gcloud run services update marketplace-handler \
-  --region=$GOOGLE_CLOUD_LOCATION \
-  --project=$GOOGLE_CLOUD_PROJECT \
-  --update-env-vars="\
-RED_HAT_SSO_ISSUER=$KEYCLOAK_URL/realms/test-realm,\
-SKIP_JWT_VALIDATION=true,\
-DCR_ENABLED=true"
-```
-
-**Agent** (introspects tokens against the test Keycloak):
-
-The agent needs the Resource Server credentials from step 5 to call the
-introspection endpoint.  The secrets were already updated above; now point
-the agent to the test Keycloak:
-
-```bash
-gcloud run services update lightspeed-agent \
-  --region=$GOOGLE_CLOUD_LOCATION \
-  --project=$GOOGLE_CLOUD_PROJECT \
-  --update-env-vars="\
-RED_HAT_SSO_ISSUER=$KEYCLOAK_URL/realms/test-realm,\
-SKIP_JWT_VALIDATION=false,\
-MCP_TRANSPORT_MODE=http"
-```
-
-> The agent reads `RED_HAT_SSO_CLIENT_ID` and `RED_HAT_SSO_CLIENT_SECRET` from
-> Secret Manager (set in step 5).  `SKIP_JWT_VALIDATION=false` ensures the
-> agent actually introspects tokens instead of bypassing validation.
-> `MCP_TRANSPORT_MODE=http` tells the agent to connect to the MCP server
-> sidecar via HTTP (the default `service.yaml` already sets this, but it
-> must be explicit if the agent was deployed separately).
-
-#### 7. Run the Test Script
-
-The marketplace handler requires Cloud Run IAM authentication by default
-(setting `--allow-unauthenticated` requires `run.services.setIamPolicy`
-permission which may not be available). The test script automatically fetches
-an ID token using your `gcloud` credentials:
-
-```bash
-# Get the handler URL
-HANDLER_URL=$(gcloud run services describe marketplace-handler \
-  --region=$GOOGLE_CLOUD_LOCATION \
-  --project=$GOOGLE_CLOUD_PROJECT \
-  --format='value(status.url)')
-
-# Run with key file signing
-export MARKETPLACE_HANDLER_URL=$HANDLER_URL
-export TEST_SA_KEY_FILE=dcr-test-key.json
-# Generate a fresh order ID for each test run
-export TEST_ORDER_ID="order-$(uuidgen || python3 -c 'import uuid; print(uuid.uuid4())')"
-# Don't set SKIP_CLOUD_RUN_AUTH -- script fetches an ID token automatically
-
-python scripts/test_deployed_dcr.py
-```
-
-> **Note:** If the handler was deployed with `--allow-unauthenticated`, you can
-> set `export SKIP_CLOUD_RUN_AUTH=true` to skip ID token authentication.
-
-Expected output:
-
-```
-<<< 201
-{
-  "client_id": "e2a91c94-...",
-  "client_secret": "UGH3iMkY...",
-  "client_secret_expires_at": 0
-}
-
-DCR succeeded.
-```
-
-#### 8. Verify in Keycloak
-
-Check that the OAuth client was created:
-
-```bash
-# Get fresh admin token
-ADMIN_TOKEN=$(curl -s -X POST \
-  "$KEYCLOAK_URL/realms/master/protocol/openid-connect/token" \
-  -d "client_id=admin-cli" \
-  -d "username=admin" \
-  -d "password=$KC_ADMIN_PASSWORD" \
-  -d "grant_type=password" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-
-# List DCR-created clients in test-realm
-# Note: 'name' is the human-readable name (gemini-order-*),
-#       'clientId' is the OAuth client_id (a UUID generated by Keycloak)
-curl -s "$KEYCLOAK_URL/admin/realms/test-realm/clients" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  | python3 -c "
-import sys, json
-clients = json.load(sys.stdin)
-for c in clients:
-    if c.get('name', '').startswith('gemini-order-'):
-        print(f\"  {c['name']} (client_id={c['clientId']})\")
-"
-```
-
-#### 9. Test the Agent with DCR Credentials
-
-Use the `client_id` and `client_secret` returned by the DCR response (step 7)
-to obtain an access token and send a message to the agent:
-
-```bash
-# Get a token and send a test message
-python scripts/test_a2a_auth.py \
-  --client-id <CLIENT_ID_FROM_DCR> \
-  --client-secret <CLIENT_SECRET_FROM_DCR> \
-  --issuer $KEYCLOAK_URL/realms/test-realm \
-  --agent-url $AGENT_URL \
-  --message "What systems have critical advisories?"
-```
-
-The script requests `scope=openid agent:insights` via `client_credentials`
-grant, then sends an A2A `message/send` request with the resulting Bearer token.
-
-To just get a token (e.g. for pasting into the A2A Inspector):
-
-```bash
-python scripts/test_a2a_auth.py \
-  --client-id <CLIENT_ID_FROM_DCR> \
-  --client-secret <CLIENT_SECRET_FROM_DCR> \
-  --issuer $KEYCLOAK_URL/realms/test-realm
-```
-
-Copy the printed token into the A2A Inspector's "Bearer Token" field and
-connect to `$AGENT_URL`.
-
-#### 10. Clean Up
-
-```bash
-# Delete the test Keycloak service
-gcloud run services delete keycloak-test \
-  --region=$GOOGLE_CLOUD_LOCATION \
-  --project=$GOOGLE_CLOUD_PROJECT \
-  --quiet
-
-# Restore handler to production configuration
-gcloud run services update marketplace-handler \
-  --region=$GOOGLE_CLOUD_LOCATION \
-  --project=$GOOGLE_CLOUD_PROJECT \
-  --update-env-vars="\
-RED_HAT_SSO_ISSUER=https://sso.redhat.com/auth/realms/redhat-external,\
-SKIP_JWT_VALIDATION=false"
-
-# Restore agent to production configuration
-gcloud run services update lightspeed-agent \
-  --region=$GOOGLE_CLOUD_LOCATION \
-  --project=$GOOGLE_CLOUD_PROJECT \
-  --update-env-vars="\
-RED_HAT_SSO_ISSUER=https://sso.redhat.com/auth/realms/redhat-external,\
-SKIP_JWT_VALIDATION=false"
-
-# Restore the production IAT in Secret Manager
-echo -n 'your-production-iat' | \
-  gcloud secrets versions add dcr-initial-access-token \
-    --data-file=- --project=$GOOGLE_CLOUD_PROJECT
-
-# Restore the production SSO credentials in Secret Manager
-echo -n 'your-production-client-id' | \
-  gcloud secrets versions add redhat-sso-client-id \
-    --data-file=- --project=$GOOGLE_CLOUD_PROJECT
-
-echo -n 'your-production-client-secret' | \
-  gcloud secrets versions add redhat-sso-client-secret \
-    --data-file=- --project=$GOOGLE_CLOUD_PROJECT
-```
-
 ### Test Script Reference
 
 The test script at `scripts/test_deployed_dcr.py` is configurable via environment variables:
@@ -1753,11 +1794,87 @@ The test script at `scripts/test_deployed_dcr.py` is configurable via environmen
 | `MARKETPLACE_HANDLER_URL` | (required) | Cloud Run handler URL |
 | `TEST_SA_KEY_FILE` | - | Path to SA key file (Method A) |
 | `TEST_SERVICE_ACCOUNT` | - | SA email for IAM API signing (Method B) |
-| `PROVIDER_URL` | `https://your-agent-domain.com` | JWT audience claim |
+| `PROVIDER_URL` | `https://www.redhat.com` | JWT audience claim (must match handler's `AGENT_PROVIDER_ORGANIZATION_URL`) |
 | `SKIP_CLOUD_RUN_AUTH` | `false` | Skip Cloud Run ID token auth |
 | `TEST_ORDER_ID` | random UUID | Fixed order ID |
 | `TEST_ACCOUNT_ID` | `test-procurement-account-001` | Procurement account ID |
 | `TEST_REDIRECT_URIS` | `https://gemini.google.com/callback` | Comma-separated redirect URIs |
+
+## GMA SSO API Configuration (Staging vs Production)
+
+The marketplace handler creates OAuth tenant clients in Red Hat SSO via the GMA API. Two environment variables control which SSO environment is used:
+
+| Variable | Description |
+|----------|-------------|
+| `RED_HAT_SSO_ISSUER` | SSO issuer URL. The token endpoint (`/protocol/openid-connect/token`) is derived from this. |
+| `GMA_API_BASE_URL` | GMA tenant creation API endpoint. |
+
+### Environment Values
+
+| Environment | `RED_HAT_SSO_ISSUER` | `GMA_API_BASE_URL` |
+|-------------|----------------------|--------------------|
+| **Production** | `https://sso.redhat.com/auth/realms/redhat-external` | `https://sso.redhat.com/auth/realms/redhat-external/apis/beta/acs/v1/` |
+| **Staging** | `https://sso.stage.redhat.com/auth/realms/redhat-external` | `https://sso.stage.redhat.com/auth/realms/redhat-external/apis/beta/acs/v1/` |
+
+Both values are set in `marketplace-handler.yaml`. To switch to staging, update both variables and use staging-specific `GMA_CLIENT_ID` / `GMA_CLIENT_SECRET` credentials:
+
+```bash
+gcloud run services update ${HANDLER_SERVICE_NAME:-marketplace-handler} \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --update-env-vars="\
+RED_HAT_SSO_ISSUER=https://sso.stage.redhat.com/auth/realms/redhat-external,\
+GMA_API_BASE_URL=https://sso.stage.redhat.com/auth/realms/redhat-external/apis/beta/acs/v1/"
+
+# Update GMA credentials in Secret Manager with staging values
+echo -n 'your-staging-gma-client-id' | \
+  gcloud secrets versions add gma-client-id --data-file=- --project=$GOOGLE_CLOUD_PROJECT
+echo -n 'your-staging-gma-client-secret' | \
+  gcloud secrets versions add gma-client-secret --data-file=- --project=$GOOGLE_CLOUD_PROJECT
+```
+
+**Important:** `RED_HAT_SSO_ISSUER` and `GMA_API_BASE_URL` must point to the same SSO environment. The GMA client credentials (`GMA_CLIENT_ID` / `GMA_CLIENT_SECRET`) are environment-specific and cannot be shared between staging and production.
+
+## Audit Logging
+
+The agent automatically produces structured audit logs that correlate each user session with Red Hat API requests. When `LOG_FORMAT=json` (the default in Cloud Run), every log record includes:
+
+- **`user_id`** — authenticated user (JWT `sub` claim)
+- **`org_id`** — Red Hat organization (JWT `org_id` claim)
+- **`order_id`** — Google Cloud Marketplace order
+- **`request_id`** — UUID4 correlation ID (unique per request)
+
+Each agent lifecycle event carries an `event_type` tag (`request_authenticated`, `agent_run_started`, `tool_call_completed`, `mcp_jwt_forwarded`, etc.) and tool calls include a `data_source` field identifying which Red Hat Insights MCP tool retrieved the data.
+
+This provides a full data lineage audit trail: every piece of information disclosed by the agent can be traced back to a specific authenticated user prompt and a verified Red Hat Insights data source. These persistent logs are independent of the ephemeral ADK session storage.
+
+### Querying Audit Logs
+
+Cloud Logging automatically parses JSON log fields. To filter logs from the Lightspeed Agent service specifically, add a `resource.labels.service_name` filter:
+
+```bash
+# All Lightspeed Agent logs (filter by Cloud Run service name)
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="lightspeed-agent"' \
+  --project=$GOOGLE_CLOUD_PROJECT --limit=50
+
+# All actions by a specific user (scoped to the agent service)
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="lightspeed-agent" AND jsonPayload.user_id="<user-id>"' \
+  --project=$GOOGLE_CLOUD_PROJECT --limit=50
+
+# All events in a single request (correlation)
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="lightspeed-agent" AND jsonPayload.request_id="<request-id>"' \
+  --project=$GOOGLE_CLOUD_PROJECT
+
+# All MCP data access for an organization
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="lightspeed-agent" AND jsonPayload.org_id="<org-id>" AND jsonPayload.message=~"mcp_jwt_forwarded"' \
+  --project=$GOOGLE_CLOUD_PROJECT
+
+# All tool calls with data source tracking
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="lightspeed-agent" AND jsonPayload.message=~"tool_call_completed"' \
+  --project=$GOOGLE_CLOUD_PROJECT --limit=20
+```
+
+No additional configuration is required — audit logging is automatically active when `LOG_FORMAT=json`.
 
 ## Monitoring
 
@@ -1797,6 +1914,91 @@ gcloud run services describe lightspeed-agent \
 1. **Secret access denied**: Ensure service account has `secretmanager.secretAccessor` role
 2. **Container fails to start**: Check logs for missing environment variables
 3. **Database connection timeout**: Ensure Cloud SQL connection is configured
+
+### Orders Stuck in Pending Status
+
+If marketplace subscriptions remain in `pending` status in the Google Cloud
+console, check the handler logs for one of these messages:
+
+**"SERVICE_CONTROL_SERVICE_NAME not set, skipping approval"** — The handler
+is not configured with the managed service name. Set it on the handler:
+
+```bash
+gcloud run services update ${HANDLER_SERVICE_NAME:-marketplace-handler} \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --update-env-vars="SERVICE_CONTROL_SERVICE_NAME=<your-service-name>.endpoints.<project-id>.cloud.goog"
+```
+
+You can find your managed service name via:
+
+```bash
+gcloud endpoints services list --project=$GOOGLE_CLOUD_PROJECT
+```
+
+**No events arriving at all** — The Pub/Sub
+subscription is likely pointing to the wrong topic. This happens when
+`PUBSUB_TOPIC` was not set to the fully-qualified marketplace topic before
+deploying. See [Set Environment Variables](#1-set-environment-variables).
+
+To verify and fix:
+
+```bash
+# Check which topic the subscription points to
+gcloud pubsub subscriptions describe ${PUBSUB_SUBSCRIPTION:-marketplace-entitlements-sub} \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --format='yaml(topic, pushConfig.pushEndpoint)'
+```
+
+If the topic is wrong, the subscription must be deleted and recreated (the
+topic cannot be changed on an existing subscription). The Pub/Sub Invoker SA
+(linked in the Marketplace Producer Portal) must be used to create the
+subscription because it holds the cross-project permissions on the
+marketplace topic:
+
+```bash
+export PUBSUB_TOPIC="projects/<marketplace-project>/topics/<your-marketplace-topic>"
+export PUBSUB_SUBSCRIPTION="marketplace-events-sub"
+export PUBSUB_INVOKER_SA="${PUBSUB_INVOKER_NAME:-pubsub-invoker}@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com"
+
+# Delete the old subscription
+gcloud pubsub subscriptions delete marketplace-entitlements-sub \
+  --project=$GOOGLE_CLOUD_PROJECT --quiet
+
+# Ensure the invoker SA has roles/pubsub.editor in your project
+# (setup.sh grants this automatically for new deployments)
+gcloud projects add-iam-policy-binding $GOOGLE_CLOUD_PROJECT \
+  --member="serviceAccount:$PUBSUB_INVOKER_SA" \
+  --role="roles/pubsub.editor" --quiet
+
+# Ensure you can impersonate the invoker SA
+gcloud iam service-accounts add-iam-policy-binding "$PUBSUB_INVOKER_SA" \
+  --member="user:$(gcloud config get account)" \
+  --role="roles/iam.serviceAccountTokenCreator" \
+  --project=$GOOGLE_CLOUD_PROJECT --quiet
+
+# Wait a couple of minutes for IAM propagation, then create the subscription
+HANDLER_URL=$(gcloud run services describe ${HANDLER_SERVICE_NAME:-marketplace-handler} \
+  --region=${GOOGLE_CLOUD_LOCATION:-us-central1} \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --format='value(status.url)')
+
+gcloud pubsub subscriptions create "$PUBSUB_SUBSCRIPTION" \
+  --topic="$PUBSUB_TOPIC" \
+  --push-endpoint="${HANDLER_URL}/dcr" \
+  --push-auth-service-account="$PUBSUB_INVOKER_SA" \
+  --ack-deadline=60 \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --impersonate-service-account="$PUBSUB_INVOKER_SA"
+```
+
+Verify the fix:
+
+```bash
+gcloud pubsub subscriptions describe "$PUBSUB_SUBSCRIPTION" \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --format='yaml(topic, pushConfig.pushEndpoint)'
+```
 
 ## Cleanup / Teardown
 

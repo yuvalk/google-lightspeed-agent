@@ -8,7 +8,10 @@
 #   gcloud run services replace deploy/cloudrun/service.yaml \
 #     --region=us-central1 --project=YOUR_PROJECT_ID
 #
-# Note: Replace ${PROJECT_ID} and ${REGION} with actual values before applying
+# Note: Replace these variables with actual values before applying:
+#   ${PROJECT_ID}         - GCP project ID
+#   ${REGION}             - Cloud Run deployment region (e.g., us-central1)
+#   ${VERTEXAI_LOCATION}  - Vertex AI model location (use "global" for pay-as-you-go)
 
 apiVersion: serving.knative.dev/v1
 kind: Service
@@ -52,13 +55,15 @@ spec:
               cpu: "2"
               memory: 2Gi
           env:
-            # Google AI Configuration
+            # Google AI / Vertex AI Configuration
+            # GOOGLE_CLOUD_LOCATION is the Vertex AI model endpoint location,
+            # NOT the Cloud Run deployment region. Use "global" for pay-as-you-go.
             - name: GOOGLE_GENAI_USE_VERTEXAI
               value: "TRUE"
             - name: GOOGLE_CLOUD_PROJECT
               value: "${PROJECT_ID}"
             - name: GOOGLE_CLOUD_LOCATION
-              value: "${REGION}"
+              value: "${VERTEXAI_LOCATION}"
             - name: GEMINI_MODEL
               value: "gemini-2.5-flash"
             # Agent Configuration
@@ -70,24 +75,41 @@ spec:
               value: "lightspeed_agent"
             - name: AGENT_PROVIDER_URL
               value: "https://lightspeed-agent.example.com"
+            # Agent provider's organization website URL.
+            # Used in AgentCard provider.url and as the expected JWT audience
+            # for Google DCR software_statement validation.
+            # Must match the aud claim Google sends in the software_statement.
+            - name: AGENT_PROVIDER_ORGANIZATION_URL
+              value: "https://www.redhat.com"
             # Marketplace handler URL for DCR endpoints in the AgentCard.
             # Must point to the marketplace-handler Cloud Run service.
             # Updated automatically by deploy.sh after deployment.
             - name: MARKETPLACE_HANDLER_URL
               value: "https://marketplace-handler.example.com"
+            # Logging and Audit Trail
+            # LOG_FORMAT=json enables structured audit logging with user_id,
+            # org_id, order_id, and request_id in every log record.  Cloud
+            # Logging parses these fields automatically for querying.
             - name: LOG_LEVEL
               value: "INFO"
             - name: LOG_FORMAT
               value: "json"
+            - name: AGENT_LOGGING_DETAIL
+              value: "basic"
             # Red Hat SSO Configuration
             - name: RED_HAT_SSO_ISSUER
               value: "https://sso.redhat.com/auth/realms/redhat-external"
-            # OAuth scope required in access tokens (checked via introspection).
+            # Comma-separated OAuth scopes required in access tokens (checked via introspection).
             # Set to empty string to disable scope checking.
             - name: AGENT_REQUIRED_SCOPE
-              value: ""
-            # Replace with the required scopes if any is needed
-            #  value: "agent:insights"
+              value: "api.console,api.ocm"
+            # Comma-separated allowlist of OAuth scopes permitted in access tokens.
+            # Tokens carrying scopes outside this list are rejected (HTTP 403).
+            - name: AGENT_ALLOWED_SCOPES
+              value: "openid,profile,email,api.console,api.ocm"
+            # Ensure production environment do not skip JWT validation
+            - name: SKIP_JWT_VALIDATION
+              value: "false"
             # MCP Configuration
             # The agent connects to the MCP sidecar container over HTTP
             - name: MCP_TRANSPORT_MODE
@@ -97,21 +119,6 @@ spec:
             - name: MCP_READ_ONLY
               value: "true"
             # Secrets from Secret Manager
-            # Lightspeed credentials (optional).
-            # If set, the agent sends them to the MCP server as HTTP headers.
-            # If not set, the agent forwards the caller's Bearer token instead.
-            # To use JWT pass-through, remove these two entries or leave the
-            # secrets empty in Secret Manager.
-            #- name: LIGHTSPEED_CLIENT_ID
-            #  valueFrom:
-            #    secretKeyRef:
-            #      name: lightspeed-client-id
-            #      key: latest
-            #- name: LIGHTSPEED_CLIENT_SECRET
-            #  valueFrom:
-            #    secretKeyRef:
-            #      name: lightspeed-client-secret
-            #      key: latest
             - name: RED_HAT_SSO_CLIENT_ID
               valueFrom:
                 secretKeyRef:
@@ -128,35 +135,26 @@ spec:
                 secretKeyRef:
                   name: database-url
                   key: latest
-            # Session Database (required for session persistence)
-            # If not set, uses in-memory storage (sessions lost on restart)
-            # For production, always configure this for session persistence
+            # Session backend: "database" for production persistence,
+            # "memory" for in-memory (sessions lost on restart)
+            - name: SESSION_BACKEND
+              value: "memory"
+            # Session Database (required when SESSION_BACKEND=database)
             - name: SESSION_DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: session-database-url
                   key: latest
-            # DCR (Dynamic Client Registration) Configuration
-            - name: DCR_ENABLED
-              value: "true"
-            - name: DCR_CLIENT_NAME_PREFIX
-              value: "gemini-order-"
-            - name: DCR_INITIAL_ACCESS_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: dcr-initial-access-token
-                  key: latest
-            - name: DCR_ENCRYPTION_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: dcr-encryption-key
-                  key: latest
             # Rate Limiting (Redis-backed, required for API Server)
+            # Uses rediss:// (TLS) for in-transit encryption to Cloud Memorystore
             - name: RATE_LIMIT_REDIS_URL
               valueFrom:
                 secretKeyRef:
                   name: rate-limit-redis-url
                   key: latest
+            # Path to the Cloud Memorystore server CA certificate for TLS verification
+            - name: RATE_LIMIT_REDIS_CA_CERT
+              value: "/secrets/redis-ca-cert/latest"
             - name: RATE_LIMIT_REDIS_TIMEOUT_MS
               value: "200"
             - name: RATE_LIMIT_KEY_PREFIX
@@ -165,18 +163,25 @@ spec:
               value: "60"
             - name: RATE_LIMIT_REQUESTS_PER_HOUR
               value: "1000"
-          # Health checks
+            # Probe server port (health/readiness checks on separate port)
+            - name: AGENT_PROBE_PORT
+              value: "8002"
+          volumeMounts:
+            - name: redis-ca-cert
+              mountPath: /secrets/redis-ca-cert
+              readOnly: true
+          # Health checks (served by the probe server on a separate port)
           startupProbe:
             httpGet:
               path: /health
-              port: 8000
+              port: 8002
             initialDelaySeconds: 5
             periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
-              port: 8000
+              port: 8002
             periodSeconds: 30
             failureThreshold: 3
 
@@ -189,8 +194,6 @@ spec:
         # Authentication: The agent forwards the caller's JWT token to the
         # MCP server via the Authorization header.  The MCP server uses this
         # token to authenticate with console.redhat.com on behalf of the user.
-        # (If Lightspeed credentials are configured on the agent, those are
-        # sent instead — see the agent container env above.)
         #
         # Sidecar container - no ports section (only main container can expose port)
         #
@@ -211,6 +214,13 @@ spec:
             limits:
               cpu: "1"
               memory: 512Mi
+      volumes:
+        - name: redis-ca-cert
+          secret:
+            secretName: redis-ca-cert
+            items:
+              - key: latest
+                path: latest
   traffic:
     - percent: 100
       latestRevision: true

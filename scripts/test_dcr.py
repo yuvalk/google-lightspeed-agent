@@ -82,114 +82,16 @@ The handler must be started with at least these environment variables:
     # Skip Google JWT signature and issuer verification (required)
     SKIP_JWT_VALIDATION=true
 
-    # --- Static credentials mode ---
-    # Client provides client_id and client_secret in the DCR request body.
-    # Set TEST_CLIENT_ID and TEST_CLIENT_SECRET on this script.
-    DCR_ENABLED=false
-
-    # --- OR: Real DCR against a local Keycloak ---
-    # DCR_ENABLED=true
-    # RED_HAT_SSO_ISSUER=http://localhost:8180/realms/test-realm
-    # DCR_INITIAL_ACCESS_TOKEN=<your-keycloak-IAT>
+    # GMA SSO API credentials for tenant creation
+    GMA_CLIENT_ID=<your-gma-client-id>
+    GMA_CLIENT_SECRET=<your-gma-client-secret>
 
     # Always required
     DCR_ENCRYPTION_KEY=<generate with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'>
     DATABASE_URL=sqlite+aiosqlite:///./lightspeed_agent.db
 
-    # Must match PROVIDER_URL below (or set AGENT_PROVIDER_URL on the handler)
-    AGENT_PROVIDER_URL=https://your-agent-domain.com
-
-------------------------------------------------------------------------
-Local Keycloak setup (for real DCR testing)
-------------------------------------------------------------------------
-
-If you want to test the full DCR flow (real OAuth client creation in
-Keycloak) without admin access to Red Hat SSO, you can run a local
-Keycloak instance in Podman.  This is optional -- static credentials
-mode (DCR_ENABLED=false) works without Keycloak.
-
-1. Start Keycloak:
-
-       podman run -d \
-         --name keycloak-test \
-         -p 8180:8080 \
-         -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
-         -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
-         -e KC_HTTP_ENABLED=true \
-         -e KC_HOSTNAME=host.containers.internal \
-         -e KC_HOSTNAME_PORT=8180 \
-         -e KC_HOSTNAME_STRICT=true \
-         quay.io/keycloak/keycloak:26.0 start-dev --http-port=8080
-
-   IMPORTANT: KC_HOSTNAME_STRICT=true with KC_HOSTNAME=host.containers.internal
-   ensures Keycloak uses a consistent issuer for all tokens regardless of how
-   requests arrive (localhost vs host.containers.internal).  Without this, the
-   IAT generated via localhost would have a mismatched issuer when the handler
-   presents it via host.containers.internal, causing "Failed decode token".
-
-2. Disable SSL and create the test realm:
-
-   Since KC_HOSTNAME_STRICT=true treats localhost as external, you must
-   disable SSL via kcadm.sh from inside the container:
-
-       podman exec keycloak-test /opt/keycloak/bin/kcadm.sh \
-         config credentials --server http://localhost:8080 \
-         --realm master --user admin --password admin
-
-       podman exec keycloak-test /opt/keycloak/bin/kcadm.sh \
-         update realms/master -s sslRequired=NONE
-
-       podman exec keycloak-test /opt/keycloak/bin/kcadm.sh \
-         create realms -s realm=test-realm -s enabled=true -s sslRequired=NONE
-
-3. Get an admin token:
-
-       ADMIN_TOKEN=$(curl -s -X POST \
-         "http://localhost:8180/realms/master/protocol/openid-connect/token" \
-         -d "client_id=admin-cli" \
-         -d "username=admin" \
-         -d "password=admin" \
-         -d "grant_type=password" \
-         | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-
-4. Generate an Initial Access Token (IAT) for DCR:
-
-       IAT=$(curl -s -X POST \
-         "http://localhost:8180/admin/realms/test-realm/clients-initial-access" \
-         -H "Authorization: Bearer $ADMIN_TOKEN" \
-         -H "Content-Type: application/json" \
-         -d '{"count": 100, "expiration": 86400}' \
-         | python -c "import sys,json; print(json.load(sys.stdin)['token'])")
-       echo "Initial Access Token: $IAT"
-
-5. Configure the marketplace handler with:
-
-       DCR_ENABLED=true
-       SKIP_JWT_VALIDATION=true
-       RED_HAT_SSO_ISSUER=http://host.containers.internal:8180/realms/test-realm
-       DCR_INITIAL_ACCESS_TOKEN=<the IAT from step 4>
-
-6. Run this script.  The handler will create a real OAuth client in
-   your local Keycloak.  Verify at:
-       http://localhost:8180/admin -> test-realm -> Clients
-
-7. You can also test Keycloak DCR directly (without the handler):
-
-       curl -s -X POST \
-         "http://localhost:8180/realms/test-realm/clients-registrations/openid-connect" \
-         -H "Authorization: Bearer $IAT" \
-         -H "Content-Type: application/json" \
-         -d '{
-           "client_name": "gemini-order-test-123",
-           "redirect_uris": ["https://gemini.google.com/callback"],
-           "grant_types": ["authorization_code", "refresh_token"],
-           "token_endpoint_auth_method": "client_secret_basic",
-           "application_type": "web"
-         }'
-
-8. Clean up:
-
-       podman stop keycloak-test && podman rm keycloak-test
+    # Must match PROVIDER_URL below (or set AGENT_PROVIDER_ORGANIZATION_URL on the handler)
+    AGENT_PROVIDER_ORGANIZATION_URL=https://www.redhat.com
 
 ------------------------------------------------------------------------
 Usage
@@ -228,9 +130,9 @@ Environment variables
     MARKETPLACE_HANDLER_URL  (default: http://localhost:8001)
         Base URL of the marketplace handler.
 
-    PROVIDER_URL  (default: https://your-agent-domain.com)
+    PROVIDER_URL  (default: https://www.redhat.com)
         Expected audience (aud) claim.  Must match the handler's
-        AGENT_PROVIDER_URL setting.
+        AGENT_PROVIDER_ORGANIZATION_URL setting.
 
     TEST_ORDER_ID  (optional)
         Fixed marketplace order ID.  If unset a random UUID is generated.
@@ -240,16 +142,6 @@ Environment variables
 
     TEST_REDIRECT_URIS  (optional, default: https://gemini.google.com/callback)
         Comma-separated list of redirect URIs.
-
-    TEST_CLIENT_ID  (optional -- static credentials mode)
-        Pre-registered OAuth client ID.  When set together with
-        TEST_CLIENT_SECRET, the script sends client_id and client_secret
-        in the DCR request body alongside the software_statement.
-        Used when DCR_ENABLED=false on the handler.
-
-    TEST_CLIENT_SECRET  (optional -- static credentials mode)
-        Pre-registered OAuth client secret.  Must be set together with
-        TEST_CLIENT_ID.
 """
 
 from __future__ import annotations
@@ -267,11 +159,9 @@ import requests
 # ---------------------------------------------------------------------------
 
 HANDLER_URL = os.environ.get("MARKETPLACE_HANDLER_URL", "http://localhost:8001")
-PROVIDER_URL = os.environ.get("PROVIDER_URL", "https://your-agent-domain.com")
+PROVIDER_URL = os.environ.get("PROVIDER_URL", "https://www.redhat.com")
 TEST_SERVICE_ACCOUNT = os.environ.get("TEST_SERVICE_ACCOUNT")
 TEST_SA_KEY_FILE = os.environ.get("TEST_SA_KEY_FILE")
-TEST_CLIENT_ID = os.environ.get("TEST_CLIENT_ID")
-TEST_CLIENT_SECRET = os.environ.get("TEST_CLIENT_SECRET")
 
 CERT_BASE_URL = (
     "https://www.googleapis.com/service_accounts/v1/metadata/x509/"
@@ -437,26 +327,16 @@ def build_software_statement(
 
 def send_dcr_request(
     software_statement: str,
-    client_id: str | None = None,
-    client_secret: str | None = None,
 ) -> None:
     """POST the software_statement to the /dcr endpoint.
 
     Args:
         software_statement: Signed JWT string.
-        client_id: Optional static OAuth client ID.
-        client_secret: Optional static OAuth client secret.
     """
     url = f"{HANDLER_URL.rstrip('/')}/dcr"
     body: dict[str, str] = {"software_statement": software_statement}
-    if client_id:
-        body["client_id"] = client_id
-    if client_secret:
-        body["client_secret"] = client_secret
 
     print(f"\n>>> POST {url}")
-    if client_id:
-        print(f"    (static credentials: client_id={client_id})")
     response = requests.post(
         url,
         json=body,
@@ -490,10 +370,6 @@ def main() -> None:
         "TEST_REDIRECT_URIS", "https://gemini.google.com/callback"
     ).split(",")
 
-    # Static credentials (optional)
-    client_id = TEST_CLIENT_ID
-    client_secret = TEST_CLIENT_SECRET
-
     print("=" * 60)
     print("DCR Test Client")
     print("=" * 60)
@@ -504,11 +380,6 @@ def main() -> None:
     print(f"  Order ID       : {order_id}")
     print(f"  Account ID     : {account_id}")
     print(f"  Redirect URIs  : {redirect_uris}")
-    if client_id:
-        print(f"  Static client  : {client_id}")
-        print(f"  Static secret  : {'*' * min(len(client_secret), 8) if client_secret else '(not set)'}")
-    else:
-        print("  Mode           : dynamic (no static credentials)")
     print()
 
     print("--- Building software_statement JWT ---")
@@ -518,12 +389,12 @@ def main() -> None:
     print(f"\n  JWT (first 80 chars): {software_statement[:80]}...")
 
     print("\n--- Sending DCR request ---")
-    send_dcr_request(software_statement, client_id, client_secret)
+    send_dcr_request(software_statement)
 
     # Send the same request again to test idempotency (should return
     # the same client_id/client_secret per Google's DCR spec)
     print("\n--- Sending duplicate DCR request (idempotency test) ---")
-    send_dcr_request(software_statement, client_id, client_secret)
+    send_dcr_request(software_statement)
 
 
 if __name__ == "__main__":

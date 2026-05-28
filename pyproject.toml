@@ -29,25 +29,28 @@ dependencies = [
     "fastapi>=0.115.0",
     "PyJWT[crypto]>=2.8.0",
     "cryptography>=46.0.5",
-    "sqlalchemy>=2.0.0",
+    "sqlalchemy[asyncio]>=2.0.0",
     "aiosqlite>=0.20.0",
     # PostgreSQL drivers
     "asyncpg>=0.29.0",  # Async driver for SQLAlchemy async operations
-    "psycopg2-binary>=2.9.0",  # Sync driver for ADK DatabaseSessionService
+    "psycopg2-binary>=2.9.0",  # Sync PostgreSQL driver (used by alembic migrations)
+    # Google Cloud authentication (ADC for Procurement API calls)
+    "google-auth>=2.0.0",
+    "requests>=2.20.0",  # Required by google.auth.transport.requests
+    # Redis for distributed rate limiting (used by both agent and marketplace handler)
+    "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]
 agent = [
     # AI/Agent frameworks
     "google-adk>=0.5.0",
-    "a2a-sdk[http-server]>=0.3.0",
+    "a2a-sdk[http-server]>=0.3.0,<1.0.0",
     "mcp>=1.0.0",
     # Configuration
-    "python-dotenv>=1.0.0",
+    "python-dotenv>=1.2.2",
     # Google Cloud integration
     "google-cloud-service-control>=1.0.0",
-    # Redis for distributed rate limiting
-    "redis>=5.0.0",
     # OpenTelemetry for distributed tracing
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",

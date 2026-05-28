@@ -1,13 +1,13 @@
 """Data models for Google Cloud Marketplace Procurement integration."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class ProcurementEventType(str, Enum):
+class ProcurementEventType(StrEnum):
     """Marketplace Procurement event types from Pub/Sub."""
 
     # Account events
@@ -37,7 +37,7 @@ class ProcurementEventType(str, Enum):
     ENTITLEMENT_OFFER_ENDED = "ENTITLEMENT_OFFER_ENDED"
 
 
-class AccountState(str, Enum):
+class AccountState(StrEnum):
     """Account states in the procurement lifecycle."""
 
     PENDING = "pending"
@@ -45,7 +45,7 @@ class AccountState(str, Enum):
     DELETED = "deleted"
 
 
-class EntitlementState(str, Enum):
+class EntitlementState(StrEnum):
     """Entitlement states in the procurement lifecycle."""
 
     PENDING = "pending"
@@ -60,50 +60,63 @@ class EntitlementState(str, Enum):
 class EntitlementInfo(BaseModel):
     """Entitlement information from Pub/Sub message."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str = Field(..., description="Entitlement ID (Order ID)")
     update_time: str | None = Field(
-        None,
+        default=None,
         alias="updateTime",
         description="Last update timestamp",
     )
     new_plan: str | None = Field(
-        None,
+        default=None,
         alias="newPlan",
         description="New plan for plan change events",
     )
     new_offer_duration_years: int | None = Field(
-        None,
+        default=None,
         alias="newOfferDurationYears",
         description="New offer duration in years",
     )
     new_offer_duration_months: int | None = Field(
-        None,
+        default=None,
         alias="newOfferDurationMonths",
         description="New offer duration in months",
     )
     new_offer_start_time: str | None = Field(
-        None,
+        default=None,
         alias="newOfferStartTime",
         description="When the new offer starts",
     )
     new_offer_end_time: str | None = Field(
-        None,
+        default=None,
         alias="newOfferEndTime",
         description="When the new offer ends",
     )
     cancellation_reason: str | None = Field(
-        None,
+        default=None,
         alias="cancellationReason",
         description="Reason for cancellation",
+    )
+    previous_plan: str | None = Field(
+        default=None,
+        alias="previousPlan",
+        description="Previous plan for plan change events",
+    )
+    product: str | None = Field(
+        default=None,
+        description="Product identifier from marketplace",
     )
 
 
 class AccountInfo(BaseModel):
     """Account information from Pub/Sub message."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str = Field(..., description="Account ID (Procurement Account ID)")
     update_time: str | None = Field(
-        None,
+        default=None,
         alias="updateTime",
         description="Last update timestamp",
     )
@@ -111,6 +124,8 @@ class AccountInfo(BaseModel):
 
 class ProcurementEvent(BaseModel):
     """Marketplace Procurement event from Pub/Sub."""
+
+    model_config = ConfigDict(populate_by_name=True)
 
     event_id: str = Field(..., alias="eventId", description="Unique event identifier")
     event_type: ProcurementEventType = Field(
@@ -124,16 +139,14 @@ class ProcurementEvent(BaseModel):
         description="Partner/Provider ID",
     )
     entitlement: EntitlementInfo | None = Field(
-        None,
+        default=None,
         description="Entitlement information (for entitlement events)",
     )
     account: AccountInfo | None = Field(
-        None,
+        default=None,
         description="Account information (for account events)",
     )
 
-    class Config:
-        populate_by_name = True
 
 
 class Account(BaseModel):
@@ -168,22 +181,22 @@ class Entitlement(BaseModel):
         default=EntitlementState.PENDING,
         description="Entitlement state",
     )
-    plan: str | None = Field(None, description="Current pricing plan")
+    plan: str | None = Field(default=None, description="Current pricing plan")
     provider_id: str = Field(..., description="Provider ID")
     usage_reporting_id: str | None = Field(
-        None,
+        default=None,
         description="Consumer ID for Service Control usage reporting",
     )
     offer_start_time: datetime | None = Field(
-        None,
+        default=None,
         description="When the offer starts",
     )
     offer_end_time: datetime | None = Field(
-        None,
+        default=None,
         description="When the offer ends",
     )
     cancellation_reason: str | None = Field(
-        None,
+        default=None,
         description="Reason for cancellation",
     )
     created_at: datetime = Field(

@@ -1,6 +1,8 @@
 """Redis-backed rate limiting middleware with global limits."""
 
+import logging
 import math
+import os
 import time
 import uuid
 from collections.abc import Callable
@@ -13,6 +15,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 from lightspeed_agent.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class RedisRateLimiter:
@@ -92,12 +96,34 @@ return {1, "ok", min_remaining_minute, min_remaining_hour, 0, 0}
     def __init__(self) -> None:
         settings = get_settings()
         timeout_seconds = max(settings.rate_limit_redis_timeout_ms, 1) / 1000.0
+        # TLS handshake (certificate exchange) needs more time than plain TCP.
+        # Use a separate, longer timeout for connection establishment so that
+        # the per-operation timeout can stay low for fast fail-open behaviour.
+        uses_tls = settings.rate_limit_redis_url.startswith("rediss://")
+        if os.getenv("K_SERVICE") and not uses_tls:
+            raise ValueError(
+                f"Redis TLS is required in Cloud Run (K_SERVICE={os.getenv('K_SERVICE')}). "
+                f"Use 'rediss://' scheme, not 'redis://'. "
+                f"Current URL: {settings.rate_limit_redis_url}"
+            )
+        if uses_tls and not settings.rate_limit_redis_ca_cert:
+            raise ValueError(
+                "RATE_LIMIT_REDIS_CA_CERT must be set when using TLS (rediss://) "
+                "for RATE_LIMIT_REDIS_URL. Provide the path to the Redis server "
+                "CA certificate for TLS verification."
+            )
+        connect_timeout = max(timeout_seconds, 5.0) if uses_tls else timeout_seconds
+        kwargs: dict[str, Any] = {
+            "encoding": "utf-8",
+            "decode_responses": True,
+            "socket_timeout": timeout_seconds,
+            "socket_connect_timeout": connect_timeout,
+        }
+        if settings.rate_limit_redis_ca_cert:
+            kwargs["ssl_ca_certs"] = settings.rate_limit_redis_ca_cert
         self._redis = Redis.from_url(
             settings.rate_limit_redis_url,
-            encoding="utf-8",
-            decode_responses=True,
-            socket_timeout=timeout_seconds,
-            socket_connect_timeout=timeout_seconds,
+            **kwargs,
         )
         self._requests_per_minute = settings.rate_limit_requests_per_minute
         self._requests_per_hour = settings.rate_limit_requests_per_hour
@@ -105,7 +131,7 @@ return {1, "ok", min_remaining_minute, min_remaining_hour, 0, 0}
 
     async def verify_connection(self) -> None:
         """Fail fast when Redis is not reachable."""
-        await self._redis.ping()
+        await self._redis.ping()  # type: ignore[misc]
 
     async def close(self) -> None:
         """Close Redis resources."""
@@ -128,7 +154,7 @@ return {1, "ok", min_remaining_minute, min_remaining_hour, 0, 0}
             redis_keys.append(f"{self._key_prefix}:{principal_key}:h")
 
         try:
-            result = await self._redis.eval(
+            result = await self._redis.eval(  # type: ignore[misc]
                 self.LUA_CHECK_AND_INCREMENT,
                 len(redis_keys),
                 *redis_keys,
@@ -140,6 +166,7 @@ return {1, "ok", min_remaining_minute, min_remaining_hour, 0, 0}
                 unique_member,
             )
         except RedisError as exc:
+            logger.error("Redis rate limiter check failed: %s", exc)
             raise RuntimeError("Redis rate limiter check failed") from exc
 
         allowed = bool(int(result[0]))
@@ -194,24 +221,37 @@ def get_redis_rate_limiter() -> RedisRateLimiter:
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Middleware for global Redis-backed rate limiting."""
 
-    # Paths to skip rate limiting
-    SKIP_PATHS = {
-        "/health",
-        "/healthz",
-        "/ready",
-        "/metrics",
-        "/.well-known/agent.json",
+    # Default paths to skip rate limiting
+    DEFAULT_SKIP_PATHS: set[str] = {
         "/docs",
         "/openapi.json",
         "/redoc",
     }
 
-    # Paths that should be rate limited (A2A JSON-RPC endpoint)
-    RATE_LIMITED_PATHS = {"/"}
+    # Default paths that should be rate limited
+    DEFAULT_RATE_LIMITED_PATHS: set[str] = {
+        "/",                            # A2A JSON-RPC endpoint
+        "/.well-known/agent.json",      # AgentCard discovery
+        "/.well-known/agent-card.json",  # AgentCard alias
+    }
 
-    def __init__(self, app: Any):
+    def __init__(
+        self,
+        app: Any,
+        *,
+        rate_limited_paths: set[str] | None = None,
+        skip_paths: set[str] | None = None,
+    ):
         super().__init__(app)
         self._limiter = get_redis_rate_limiter()
+        self._rate_limited_paths = (
+            rate_limited_paths
+            if rate_limited_paths is not None
+            else self.DEFAULT_RATE_LIMITED_PATHS
+        )
+        self._skip_paths = (
+            skip_paths if skip_paths is not None else self.DEFAULT_SKIP_PATHS
+        )
 
     async def dispatch(
         self,
@@ -223,42 +263,55 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Skip rate limiting for non-API paths
         if self._should_skip(path):
-            return await call_next(request)
+            response: Response = await call_next(request)
+            return response
 
         # Check rate limit
         principals = self._resolve_principals(request)
         try:
             allowed, status = await self._limiter.is_allowed(principal_keys=principals)
         except RuntimeError:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": "rate_limiter_unavailable",
-                    "message": "Rate limiter backend unavailable",
-                },
+            # Fail open: allow the request through when Redis is unavailable.
+            # Blocking all traffic on a rate-limiter outage would be a
+            # self-inflicted denial of service.
+            logger.warning(
+                "Rate limiter backend unavailable, allowing request (fail-open). "
+                "principals=%s",
+                principals,
             )
+            response = await call_next(request)
+            return response
 
         if not allowed:
+            logger.warning(
+                "Rate limit exceeded: principal=%s, limit=%s, "
+                "requests_minute=%s, requests_hour=%s, retry_after=%s",
+                status.get("limited_principal"),
+                status.get("exceeded"),
+                status.get("requests_this_minute"),
+                status.get("requests_this_hour"),
+                status.get("retry_after"),
+            )
             return self._rate_limit_response(status)
 
         # Process request
-        response = await call_next(request)
+        actual_response: Response = await call_next(request)
 
         # Add rate limit headers
-        response.headers["X-RateLimit-Limit"] = str(status["limit_per_minute"])
-        response.headers["X-RateLimit-Remaining"] = str(
+        actual_response.headers["X-RateLimit-Limit"] = str(status["limit_per_minute"])
+        actual_response.headers["X-RateLimit-Remaining"] = str(
             max(0, int(status["limit_per_minute"]) - int(status["requests_this_minute"]))
         )
 
-        return response
+        return actual_response
 
     def _should_skip(self, path: str) -> bool:
         """Check if path should skip rate limiting."""
-        if path in self.SKIP_PATHS:
+        if path in self._skip_paths:
             return True
 
         # Only rate limit specific paths
-        for rate_limited_path in self.RATE_LIMITED_PATHS:
+        for rate_limited_path in self._rate_limited_paths:
             if path == rate_limited_path or path.startswith(f"{rate_limited_path}/"):
                 return False
 

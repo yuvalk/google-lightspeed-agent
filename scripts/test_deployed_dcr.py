@@ -88,9 +88,9 @@ Environment variables
         Email of the GCP service account used to sign the JWT via the
         IAM Credentials API.  Ignored if TEST_SA_KEY_FILE is set.
 
-    PROVIDER_URL  (default: https://your-agent-domain.com)
+    PROVIDER_URL  (default: https://www.redhat.com)
         Expected audience (aud) claim.  Must match the handler's
-        AGENT_PROVIDER_URL setting.
+        AGENT_PROVIDER_ORGANIZATION_URL setting.
 
     SKIP_CLOUD_RUN_AUTH  (default: false)
         Set to "true" to skip Cloud Run ID token authentication.
@@ -104,16 +104,6 @@ Environment variables
 
     TEST_REDIRECT_URIS  (optional, default: https://gemini.google.com/callback)
         Comma-separated list of redirect URIs.
-
-    TEST_CLIENT_ID  (optional -- static credentials mode)
-        Pre-registered OAuth client ID.  When set together with
-        TEST_CLIENT_SECRET, the script sends client_id and client_secret
-        in the DCR request body alongside the software_statement.
-        Used when DCR_ENABLED=false on the handler.
-
-    TEST_CLIENT_SECRET  (optional -- static credentials mode)
-        Pre-registered OAuth client secret.  Must be set together with
-        TEST_CLIENT_ID.
 """
 
 from __future__ import annotations
@@ -132,12 +122,10 @@ import requests
 # ---------------------------------------------------------------------------
 
 HANDLER_URL = os.environ.get("MARKETPLACE_HANDLER_URL", "")
-PROVIDER_URL = os.environ.get("PROVIDER_URL", "https://your-agent-domain.com")
+PROVIDER_URL = os.environ.get("PROVIDER_URL", "https://www.redhat.com")
 TEST_SERVICE_ACCOUNT = os.environ.get("TEST_SERVICE_ACCOUNT")
 TEST_SA_KEY_FILE = os.environ.get("TEST_SA_KEY_FILE")
 SKIP_CLOUD_RUN_AUTH = os.environ.get("SKIP_CLOUD_RUN_AUTH", "false").lower() == "true"
-TEST_CLIENT_ID = os.environ.get("TEST_CLIENT_ID")
-TEST_CLIENT_SECRET = os.environ.get("TEST_CLIENT_SECRET")
 
 CERT_BASE_URL = (
     "https://www.googleapis.com/service_accounts/v1/metadata/x509/"
@@ -347,31 +335,21 @@ def get_cloud_run_id_token(audience: str) -> str | None:
 def send_dcr_request(
     software_statement: str,
     id_token: str | None = None,
-    client_id: str | None = None,
-    client_secret: str | None = None,
 ) -> None:
     """POST the software_statement to the /dcr endpoint.
 
     Args:
         software_statement: Signed JWT string.
         id_token: Optional Cloud Run ID token for authentication.
-        client_id: Optional static OAuth client ID.
-        client_secret: Optional static OAuth client secret.
     """
     url = f"{HANDLER_URL.rstrip('/')}/dcr"
     body: dict[str, str] = {"software_statement": software_statement}
-    if client_id:
-        body["client_id"] = client_id
-    if client_secret:
-        body["client_secret"] = client_secret
 
     headers = {"Content-Type": "application/json"}
     if id_token:
         headers["Authorization"] = f"Bearer {id_token}"
 
     print(f"\n>>> POST {url}")
-    if client_id:
-        print(f"    (static credentials: client_id={client_id})")
     if id_token:
         print(f"    Authorization: Bearer {id_token[:40]}...")
     response = requests.post(
@@ -430,10 +408,6 @@ def main() -> None:
         "TEST_REDIRECT_URIS", "https://gemini.google.com/callback"
     ).split(",")
 
-    # Static credentials (optional)
-    client_id = TEST_CLIENT_ID
-    client_secret = TEST_CLIENT_SECRET
-
     print("=" * 60)
     print("DCR Test Client (Deployed Cloud Run)")
     print("=" * 60)
@@ -445,11 +419,6 @@ def main() -> None:
     print(f"  Account ID     : {account_id}")
     print(f"  Redirect URIs  : {redirect_uris}")
     print(f"  Cloud Run auth : {'skip' if SKIP_CLOUD_RUN_AUTH else 'enabled'}")
-    if client_id:
-        print(f"  Static client  : {client_id}")
-        print(f"  Static secret  : {'*' * min(len(client_secret), 8) if client_secret else '(not set)'}")
-    else:
-        print("  Mode           : dynamic (no static credentials)")
     print()
 
     # --- Step 1: Build software_statement JWT ---
@@ -478,11 +447,11 @@ def main() -> None:
 
     # --- Step 3: Send DCR request ---
     print("\n--- Sending DCR request ---")
-    send_dcr_request(software_statement, id_token, client_id, client_secret)
+    send_dcr_request(software_statement, id_token)
 
     # --- Step 4: Idempotency test ---
     print("\n--- Sending duplicate DCR request (idempotency test) ---")
-    send_dcr_request(software_statement, id_token, client_id, client_secret)
+    send_dcr_request(software_statement, id_token)
 
 
 if __name__ == "__main__":

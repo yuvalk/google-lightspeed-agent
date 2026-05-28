@@ -58,14 +58,26 @@ Rate limits are evaluated across multiple principal dimensions:
 If both `order_id` and `user_id` are present, the request must pass both checks.
 If either dimension exceeds the configured limit, the request is rejected with `429`.
 
+### Rate-Limited Paths
+
+**Agent service (port 8000):**
+
+- `/` - A2A JSON-RPC endpoint (authenticated — keyed by order, user, or client)
+- `/.well-known/agent.json` - AgentCard discovery (unauthenticated — keyed by IP)
+- `/.well-known/agent-card.json` - AgentCard alias (unauthenticated — keyed by IP)
+
+**Marketplace handler (port 8001):**
+
+- `/dcr` - DCR and Pub/Sub endpoint (unauthenticated — keyed by IP)
+
+Both services share the same Redis backend and the same per-IP limits.
+
 ### Skipped Paths
 
 These paths are never rate-limited:
 
-- `/health`, `/healthz`, `/ready` - Health checks
-- `/metrics` - Prometheus metrics
-- `/.well-known/agent.json` - Agent card
-- `/docs`, `/openapi.json`, `/redoc` - Documentation
+- `/health`, `/healthz`, `/ready` - Health checks (served on a separate probe port, never reach the rate limiting middleware)
+- `/docs`, `/openapi.json`, `/redoc` - Documentation (disabled in production via `DEBUG=false`)
 
 ## Response Headers
 
@@ -170,3 +182,5 @@ Rate limiting happens **before** the request is processed (at the middleware lay
 
 - Rate limits are enforced across replicas as long as they share the same Redis instance.
 - The service verifies Redis connectivity at startup and fails fast when Redis is unavailable.
+- **Fail-open behaviour**: If Redis becomes unreachable at runtime, requests are allowed through without rate limiting (with a warning log). This prevents a Redis outage from causing a self-inflicted denial of service.
+- **In-transit encryption (TLS)**: Cloud Memorystore instances are created with `--transit-encryption-mode=SERVER_AUTHENTICATION`. Use the `rediss://` URL scheme and set `RATE_LIMIT_REDIS_CA_CERT` to the path of the mounted server CA certificate. See [Cloud Run Deployment — Redis Setup](../deploy/cloudrun/README.md#4-redis-setup-for-rate-limiting) for setup instructions.

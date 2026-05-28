@@ -8,14 +8,19 @@ import pytest_asyncio
 # Set test environment variables before importing application modules
 os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "FALSE"
 os.environ["GOOGLE_API_KEY"] = "test-api-key"
-os.environ["LIGHTSPEED_CLIENT_ID"] = "test-client-id"
-os.environ["LIGHTSPEED_CLIENT_SECRET"] = "test-client-secret"
+os.environ.pop("GOOGLE_CLOUD_PROJECT", None)  # Prevent leaking from user's shell
+os.environ.pop("GMA_CLIENT_ID", None)
+os.environ.pop("GMA_CLIENT_SECRET", None)
+os.environ.pop("GMA_API_BASE_URL", None)
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 os.environ["DEBUG"] = "true"
 os.environ["SKIP_JWT_VALIDATION"] = "true"
-os.environ["DCR_ENABLED"] = "false"  # Use pre-seeded credentials for tests
 os.environ["RED_HAT_SSO_CLIENT_ID"] = "test-static-client-id"
 os.environ["RED_HAT_SSO_CLIENT_SECRET"] = "test-static-client-secret"
+# Stable Fernet key for tests — secrets encrypted in one test can be decrypted in another
+from cryptography.fernet import Fernet as _Fernet  # noqa: E402
+
+os.environ["DCR_ENCRYPTION_KEY"] = _Fernet.generate_key().decode()
 
 
 @pytest.fixture
@@ -25,12 +30,9 @@ def test_settings():
 
     return Settings(
         google_api_key="test-api-key",
-        lightspeed_client_id="test-client-id",
-        lightspeed_client_secret="test-client-secret",
         database_url="sqlite+aiosqlite:///:memory:",
         debug=True,
         skip_jwt_validation=True,
-        dcr_enabled=False,
         red_hat_sso_client_id="test-static-client-id",
         red_hat_sso_client_secret="test-static-client-secret",
     )
@@ -42,7 +44,7 @@ async def db_session():
 
     Creates all tables and yields, then cleans up after.
     """
-    from lightspeed_agent.db import init_database, close_database
+    from lightspeed_agent.db import close_database, init_database
 
     await init_database()
     yield

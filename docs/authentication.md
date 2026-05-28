@@ -7,10 +7,10 @@ This document describes the authentication mechanisms used by the Lightspeed Age
 The system uses three distinct authentication flows:
 
 1. **Dynamic Client Registration (DCR)** -- Handler creates per-order OAuth clients in Red Hat SSO
-2. **Token Introspection** -- Agent validates access tokens via Keycloak introspection endpoint (RFC 7662) and checks for `agent:insights` scope
-3. **MCP Service Account** -- Agent passes Lightspeed credentials to the MCP sidecar, which obtains its own OAuth2 token from sso.redhat.com to call console.redhat.com APIs
+2. **Token Introspection** -- Agent validates access tokens via Red Hat SSO introspection endpoint (RFC 7662) and checks for `api.console` and `api.ocm` scopes
+3. **MCP JWT Pass-Through** -- Agent forwards the caller's JWT token to the MCP sidecar, which uses it to call console.redhat.com APIs on behalf of the user
 
-Clients obtain access tokens directly from Red Hat SSO (Keycloak) using their DCR-issued credentials. The agent acts purely as a **Resource Server** — it validates incoming tokens but does not proxy or participate in the OAuth authorization flow.
+Clients obtain access tokens directly from Red Hat SSO using their DCR-issued credentials. The agent acts purely as a **Resource Server** — it validates incoming tokens but does not proxy or participate in the OAuth authorization flow.
 
 ## Authentication Architecture
 
@@ -29,17 +29,17 @@ Clients obtain access tokens directly from Red Hat SSO (Keycloak) using their DC
 |  |                                                   | |                  |
 |  |  Pub/Sub path:         DCR path:                  | |                  |
 |  |  - Decode msg          - Validate Google JWT  [3] | |                  |
-|  |  - Approve via         - Verify order in DB       | |                  |
-|  |    Procurement API     - Create OAuth client  [4] | |                  |
-|  |  - Store account/      - Return client_id +       | |                  |
-|  |    entitlement           client_secret            | |                  |
+|  |  - Filter by product   - Verify order in DB       | |                  |
+|  |  - Approve entitlement - Create OAuth client  [4] | |                  |
+|  |    via Procurement API - Return client_id +       | |                  |
+|  |  - Store entitlement     client_secret            | |                  |
 |  +---+--------------------+----------+---------------+ |                  |
 |      |                    |          |                 |                  |
 |      v                    |          v                 |                  |
 |  +----------+             |   +-------------+          |                  |
 |  |PostgreSQL|             |   | Red Hat SSO |          |                  |
-|  |(accounts,|             |   | (Keycloak)  |          |                  |
-|  | orders,  |             |   | DCR endpoint|          |                  |
+|  |(accounts,|             |   | (GMA SSO    |          |                  |
+|  | orders,  |             |   |  API)       |          |                  |
 |  | dcr      |             |   +-------------+          |                  |
 |  | clients) |             |          ^                 |                  |
 |  +----------+             |          |                 |                  |
@@ -59,7 +59,7 @@ Clients obtain access tokens directly from Red Hat SSO (Keycloak) using their DC
                           |  +-----------------------------+  |   (introspect)            |
                           +->| - OIDC / OAuth2 provider    |  |                 v         |
                              | - Token introspection       |<---+  +---------+------+    |
-                             | - DCR endpoint              |  | |  | A2A Endpoint   |    |
+                             | - GMA SSO API               |  | |  | A2A Endpoint   |    |
                              +-----------------------------+  | |  | POST /         |    |
                                                               | |  | (authenticated)|    |
                                                               | |  +--------+-------+    |
@@ -67,15 +67,15 @@ Clients obtain access tokens directly from Red Hat SSO (Keycloak) using their DC
                                                               | |           v             |
                                                               | |  +-----------------------------+
                                                               | |  |  7. MCP Tool Calls          |
-                                                              | |  |     lightspeed-client-id    |
-                                                              | |  |     lightspeed-client-secret|
+                                                              | |  |     Authorization: Bearer   |
+                                                              | |  |     (caller's JWT token)    |
                                                               | |  +-------------+---------------+
                                                               | |                |               |
                                                               | |                v               |
                                                               | |  +----------------------------+|
                                                               | +--| MCP Sidecar (8081)         ||
-                                                              |    | 8. OAuth2 token from SSO   ||
-                                                              |    |    (Lightspeed SA creds)   ||
+                                                              |    | 8. Calls APIs using the    ||
+                                                              |    |    forwarded JWT token     ||
                                                               |    +-------------+--------------+|
                                                               |                  |               |
                                                               +---------------------------+-----+
@@ -94,15 +94,14 @@ Clients obtain access tokens directly from Red Hat SSO (Keycloak) using their DC
 
 | Step | Direction | Description |
 |------|-----------|-------------|
-| 1 | Google -> Handler | Pub/Sub procurement event (account/entitlement approval) |
+| 1 | Google -> Handler | Pub/Sub procurement event (entitlement approval, filtered by product) |
 | 2 | Google -> Handler | DCR request with `software_statement` JWT |
 | 3 | Handler -> Google | Fetch X.509 certificates to validate JWT signature |
-| 4 | Handler -> Red Hat SSO | Create OAuth client via Keycloak DCR endpoint |
-| 5 | Client -> Red Hat SSO | Client obtains access token directly from Keycloak (e.g., `client_credentials` grant) |
-| 6 | Agent -> Red Hat SSO | Introspect token on every A2A request; check `agent:insights` scope |
-| 7 | Agent -> MCP Sidecar | Tool call with Lightspeed credentials in headers |
-| 8 | MCP Sidecar -> Red Hat SSO | Obtain OAuth2 token using Lightspeed service account |
-| 9 | MCP Sidecar -> console.redhat.com | Call Insights APIs with Bearer token |
+| 4 | Handler -> Red Hat SSO | Create OAuth client via GMA SSO API |
+| 5 | Client -> Red Hat SSO | Client obtains access token directly from Red Hat SSO (e.g., `client_credentials` grant) |
+| 6 | Agent -> Red Hat SSO | Introspect token on every A2A request; check `api.console` and `api.ocm` scopes |
+| 7 | Agent -> MCP Sidecar | Tool call with caller's JWT token in Authorization header |
+| 8 | MCP Sidecar -> console.redhat.com | Call Insights APIs using the forwarded JWT token |
 
 ## Dynamic Client Registration (DCR)
 
@@ -117,7 +116,7 @@ DCR is handled by the **Marketplace Handler** service (port 8001). It creates pe
    - Verifies RS256 signature, expiration, and audience
    - Extracts `google.order` (order ID) and `sub` (account ID)
 4. Handler verifies the order exists in the marketplace database (security check)
-5. Handler calls Red Hat SSO's DCR endpoint to create an OAuth client
+5. Handler calls the GMA SSO API to create an OAuth client
 6. Handler stores the encrypted client credentials in PostgreSQL
 7. Handler returns `{client_id, client_secret, client_secret_expires_at: 0}` to Gemini
 
@@ -130,64 +129,45 @@ The `software_statement` JWT from Google contains:
 | Claim | Description |
 |-------|-------------|
 | `iss` | Google certificate URL (for signature verification) |
-| `aud` | Agent's provider URL (`AGENT_PROVIDER_URL`) |
+| `aud` | Agent provider's organization URL (`AGENT_PROVIDER_ORGANIZATION_URL`) |
 | `sub` | Procurement Account ID |
 | `google.order` | Marketplace Order ID (validated against database) |
 | `auth_app_redirect_uris` | Redirect URIs for the OAuth client |
 | `iat` / `exp` | Issued-at and expiration timestamps |
 
-### DCR Modes
-
-| Mode | Setting | Behavior |
-|------|---------|----------|
-| **Real DCR** | `DCR_ENABLED=true` (default) | Creates actual OAuth clients in Red Hat SSO via Keycloak DCR |
-| **Static credentials** | `DCR_ENABLED=false` | Accepts `client_id` and `client_secret` from the DCR request body, validates them against the Red Hat SSO token endpoint, stores them linked to the order, and returns them |
-
-Real DCR requires a `DCR_INITIAL_ACCESS_TOKEN` from the Red Hat SSO admin. Static mode requires the caller to provide pre-registered OAuth credentials in the request body alongside the `software_statement`.
-
 ### DCR Configuration
 
+DCR creates OAuth tenant clients in Red Hat SSO via the GMA API. It requires `GMA_CLIENT_ID` and `GMA_CLIENT_SECRET` credentials for authenticating against the GMA SSO API with `scope=api.iam.clients.gma`.
+
 ```bash
-# Real DCR mode
-DCR_ENABLED=true
-DCR_INITIAL_ACCESS_TOKEN="<token-from-keycloak-admin>"
+GMA_CLIENT_ID="<gma-client-id>"
+GMA_CLIENT_SECRET="<gma-client-secret>"
 DCR_CLIENT_NAME_PREFIX="gemini-order-"
 DCR_ENCRYPTION_KEY="<fernet-key>"   # Encrypts stored client secrets
 
-# Red Hat SSO -- DCR endpoint derived as {issuer}/clients-registrations/openid-connect
-RED_HAT_SSO_ISSUER="https://sso.redhat.com/auth/realms/redhat-external"
+# GMA API base URL (default: derived from Red Hat SSO issuer)
+# GMA_API_BASE_URL="https://sso.redhat.com/auth/realms/redhat-external/apis/beta/acs/v1/"
 ```
 
 ### Testing DCR Locally
 
-For local testing without admin access to the production Red Hat SSO, see the [Testing DCR Locally](../README.md#testing-dcr-locally) section in the README. It covers:
+For local testing without admin access to the production Red Hat SSO, see the [Testing DCR Locally](../README.md#testing-dcr-locally) section in the README.
 
-- **Static credentials mode** -- caller provides `client_id` and `client_secret` in the request body (no Keycloak needed)
-- **Local Keycloak in Podman** -- full DCR flow against a local instance
-
-A test script is available at `scripts/test_dcr.py` that signs a software_statement JWT with a GCP service account you control. For static credentials mode, set `TEST_CLIENT_ID` and `TEST_CLIENT_SECRET` to include them in the request body. When the handler runs with `SKIP_JWT_VALIDATION=true`, it accepts JWTs from any service account and skips credential validation against Red Hat SSO.
+A test script is available at `scripts/test_dcr.py` that signs a software_statement JWT with a GCP service account you control. When the handler runs with `SKIP_JWT_VALIDATION=true`, it accepts JWTs from any service account.
 
 ### Security Considerations
 
 - **Order ID validation**: The handler verifies the order exists in the database before creating a client. Without this check, any valid Google JWT (even for a different product) could register a client.
 - **Secret encryption**: Client secrets are encrypted with Fernet before storage in PostgreSQL.
-- **Initial Access Token**: Stored as a secret, never in code. Has limited uses (configurable in Keycloak).
-- **Registration Access Tokens**: Encrypted and stored for future client management.
+- **Client secrets**: Encrypted with Fernet before storage in PostgreSQL.
 
 ## MCP Sidecar Authentication
 
-The MCP sidecar authenticates to console.redhat.com using a Lightspeed service account (machine-to-machine, no user interaction). The agent passes the credentials to the sidecar via HTTP headers on every tool call.
-
-| Variable | Description |
-|----------|-------------|
-| `LIGHTSPEED_CLIENT_ID` | Service account client ID from console.redhat.com |
-| `LIGHTSPEED_CLIENT_SECRET` | Service account client secret |
-
-The MCP sidecar uses these credentials to obtain an OAuth2 access token from sso.redhat.com, then calls console.redhat.com APIs (Advisor, Inventory, Vulnerability, etc.) with the Bearer token. See [MCP Integration](mcp-integration.md) for full details.
+The agent forwards the caller's JWT token to the MCP sidecar via the `Authorization: Bearer <token>` header on every tool call. The MCP sidecar uses this token to authenticate with console.redhat.com APIs (Advisor, Inventory, Vulnerability, etc.) on behalf of the calling user. See [MCP Integration](mcp-integration.md) for full details.
 
 ## Token Introspection
 
-All protected endpoints validate Bearer tokens via Keycloak token introspection
+All protected endpoints validate Bearer tokens via Red Hat SSO token introspection
 (RFC 7662) rather than local JWKS-based JWT verification.  This avoids audience
 mismatch issues when tokens are issued by DCR-created clients (each has its own
 `client_id` as audience).
@@ -199,10 +179,15 @@ mismatch issues when tokens are issued by DCR-created clients (each has its own
    `{RED_HAT_SSO_ISSUER}/protocol/openid-connect/token/introspect`
 3. **Authenticate as Resource Server**: Agent authenticates with its own
    `RED_HAT_SSO_CLIENT_ID` / `RED_HAT_SSO_CLIENT_SECRET` via HTTP Basic Auth
-4. **Check Active**: Keycloak returns `{"active": true/false, ...}`.
+4. **Check Active**: Red Hat SSO returns `{"active": true/false, ...}`.
    If `active` is `false`, the agent returns **401 Unauthorized**.
-5. **Check Scope**: Agent checks that `agent:insights` is present in the
-   token's `scope` field.  If missing, the agent returns **403 Forbidden**.
+5. **Check Scope**: Agent checks that the required scopes (`api.console` and
+   `api.ocm`) are present in the token's `scope` field.  If any are missing,
+   the agent returns **403 Forbidden**.
+6. **Check Allowed Scopes**: Agent checks that the token does not carry scopes
+   outside the configured allowlist (`AGENT_ALLOWED_SCOPES`).  If disallowed
+   scopes are present, the agent returns **403 Forbidden**.  This prevents
+   tokens with elevated privileges from being forwarded to downstream services.
 6. **Build User**: Agent maps the introspection response to an
    `AuthenticatedUser` for downstream use.
 
@@ -213,23 +198,35 @@ its own `RED_HAT_SSO_CLIENT_ID`.  However, DCR-created clients each get their
 own `client_id` as the audience in issued tokens.  This causes audience
 mismatch errors.
 
-Token introspection delegates validation to Keycloak, which knows about all
+Token introspection delegates validation to Red Hat SSO, which knows about all
 clients in the realm.  The agent only needs to confirm the token is active and
 carries the required scope.
 
-### Required Scope: `agent:insights`
+### Required Scopes: `api.console` and `api.ocm`
 
-Following the [reference implementation](https://github.com/ljogeiger/GE-A2A-Marketplace-Agent/tree/main/2_oauth)
-pattern of `agent:time`, the agent requires the `agent:insights` scope.  This
-scope must be:
+The agent requires the `api.console` and `api.ocm` scopes.  These scopes
+must be:
 
-1. Created as a Client Scope in the Keycloak realm
+1. Created as Client Scopes in the Red Hat SSO realm
 2. Assigned to the agent's Resource Server client
 3. Included in DCR-created clients (via the `scope` field in the DCR request
    body per RFC 7591)
 
-The required scope is configurable via `AGENT_REQUIRED_SCOPE` (default:
-`agent:insights`).
+The required scopes are configurable via `AGENT_REQUIRED_SCOPE` (comma-separated,
+default: `api.console,api.ocm`).
+
+### Allowed Scopes (Scope Allowlist)
+
+In addition to checking that required scopes are present, the agent enforces an
+**allowlist** of permitted scopes via `AGENT_ALLOWED_SCOPES` (comma-separated,
+default: `openid,profile,email,api.console,api.ocm`).  Tokens carrying scopes
+outside this list are rejected with **403 Forbidden**.
+
+This is a defense-in-depth measure: since the agent forwards the caller's JWT
+to the MCP sidecar and downstream APIs, restricting scopes prevents tokens with
+elevated privileges from being exercised against those services.
+
+All permitted scopes must be explicitly listed in `AGENT_ALLOWED_SCOPES`.
 
 ### Introspection Response Fields
 
@@ -242,7 +239,7 @@ The agent extracts the following fields from the introspection response:
 | `preferred_username` | Username | Display name |
 | `email` | Email address | User contact |
 | `org_id` | Organization ID | Multi-tenancy |
-| `scope` | Space-separated scopes | Authorization (`agent:insights` check) |
+| `scope` | Space-separated scopes | Authorization (`api.console`, `api.ocm` check) |
 | `exp` | Token expiry (unix timestamp) | Session management |
 
 ## Using Authentication in API Calls
@@ -274,12 +271,12 @@ curl -X POST http://localhost:8000/ \
 
 ### Protected vs Public Endpoints
 
-| Endpoint | Authentication |
-|----------|----------------|
-| `GET /health` | Public |
-| `GET /ready` | Public |
-| `GET /.well-known/agent.json` | Public |
-| `POST /` | Required (A2A JSON-RPC) |
+| Endpoint | Port | Authentication |
+|----------|------|----------------|
+| `GET /health` | Probe port (8002/8003) | Not applicable (separate server, no auth middleware) |
+| `GET /ready` | Probe port (8002/8003) | Not applicable (separate server, no auth middleware) |
+| `GET /.well-known/agent.json` | 8000 | Public |
+| `POST /` | 8000 | Required (A2A JSON-RPC) |
 
 ## Red Hat SSO Configuration
 
@@ -293,8 +290,12 @@ RED_HAT_SSO_ISSUER=https://sso.redhat.com/auth/realms/redhat-external
 RED_HAT_SSO_CLIENT_ID=your-client-id
 RED_HAT_SSO_CLIENT_SECRET=your-client-secret
 
-# Required scope checked during token introspection (default: agent:insights)
-AGENT_REQUIRED_SCOPE=agent:insights
+# Required scopes checked during token introspection (comma-separated, default: api.console,api.ocm)
+AGENT_REQUIRED_SCOPE=api.console,api.ocm
+
+# Allowed scopes allowlist (comma-separated, default: openid,profile,email,api.console,api.ocm)
+# Tokens carrying scopes outside this list are rejected (HTTP 403).
+AGENT_ALLOWED_SCOPES=openid,profile,email,api.console,api.ocm
 ```
 
 ### Registering an OAuth Client
@@ -318,7 +319,7 @@ DEBUG=true
 **Warning**: Never enable this in production!
 
 When validation is skipped, a default development user is created with the
-`agent:insights` scope pre-granted:
+required scopes pre-granted:
 
 ```json
 {
@@ -326,7 +327,7 @@ When validation is skipped, a default development user is created with the
   "client_id": "dev-client",
   "username": "developer",
   "email": "dev@example.com",
-  "scopes": ["openid", "profile", "email", "agent:insights"]
+  "scopes": ["openid", "profile", "email", "api.console", "api.ocm"]
 }
 ```
 
@@ -362,9 +363,9 @@ This is the easiest way to test without needing real Red Hat SSO credentials.
    python -m lightspeed_agent.main
    ```
 
-3. **Test the health endpoint**:
+3. **Test the health endpoint** (on the probe port):
    ```bash
-   curl http://localhost:8000/health
+   curl http://localhost:8002/health
    # Expected: {"status": "healthy"}
    ```
 
@@ -400,7 +401,7 @@ For integration testing with real Red Hat SSO authentication:
    RED_HAT_SSO_ISSUER=https://sso.redhat.com/auth/realms/redhat-external
    RED_HAT_SSO_CLIENT_ID=your-registered-client-id
    RED_HAT_SSO_CLIENT_SECRET=your-client-secret
-   AGENT_REQUIRED_SCOPE=agent:insights
+   AGENT_REQUIRED_SCOPE=api.console,api.ocm
    ```
 
 2. **Start the API server**:
@@ -420,7 +421,7 @@ For integration testing with real Red Hat SSO authentication:
      -d "client_id=YOUR_CLIENT_ID" \
      -d "client_secret=YOUR_CLIENT_SECRET" \
      -d "grant_type=client_credentials" \
-     -d "scope=openid agent:insights" \
+     -d "scope=openid api.console api.ocm" \
      | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
    ```
 
@@ -483,14 +484,14 @@ Test how the system handles authentication errors:
 
 #### "Insufficient scope" / 403 Forbidden
 
-The token is valid but missing the `agent:insights` scope:
-1. Ensure the `agent:insights` Client Scope exists in the Keycloak realm
-2. Verify the scope is assigned to the client that issued the token
+The token is valid but missing a required scope:
+1. Ensure the `api.console` and `api.ocm` Client Scopes exist in the Red Hat SSO realm
+2. Verify the scopes are assigned to the client that issued the token
 3. Check the token's scopes: `echo $TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq .scope`
 
 #### "CORS errors" in browser
 
-If testing from a browser on a different origin, you may need to configure CORS. The agent should handle this, but verify your browser isn't blocking requests.
+CORS is disabled by default in production (both services are server-to-server). If testing from a browser on a different origin, either set `DEBUG=true` (allows all origins without credentials) or set `CORS_ALLOWED_ORIGINS` to the specific origin (e.g., `CORS_ALLOWED_ORIGINS=http://localhost:3000`).
 
 #### Server not starting
 
@@ -524,7 +525,8 @@ pytest tests/test_auth.py --cov=lightspeed_agent.auth
 | 401 | Missing credentials | No Authorization header |
 | 401 | Token not active | Introspection returned `active: false` (expired, revoked, or invalid) |
 | 401 | Introspection failed | HTTP error calling introspection endpoint |
-| 403 | Insufficient scope | Token is active but missing `agent:insights` scope |
+| 403 | Insufficient scope | Token is active but missing required scope(s) (`api.console`, `api.ocm`) |
+| 403 | Disallowed scope | Token carries scope(s) outside the configured allowlist (`AGENT_ALLOWED_SCOPES`) |
 
 ### Error Response Format
 

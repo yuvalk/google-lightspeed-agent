@@ -14,10 +14,10 @@ with the [A2A protocol](https://google.github.io/A2A/) (Agent-to-Agent) for inte
 │                              FastAPI Application                            │
 │                                   (app.py)                                  │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  Middleware Stack (applied in reverse order)                                │
-│  ┌─────────────┐  ┌──────────────────┐  ┌─────────────────┐                 │
-│  │    CORS     │→ │ Authentication   │→ │  RateLimiting   │                 │
-│  └─────────────┘  └──────────────────┘  └─────────────────┘                 │
+│  Middleware Stack (request order, outermost first)                          │
+│  ┌──────┐ ┌───────────┐ ┌──────────────┐ ┌───────────┐ ┌──────────────┐    │
+│  │ CORS │→│ BodyLimit │→│ SecHeaders   │→│ RateLimit │→│    Auth      │    │
+│  └──────┘ └───────────┘ └──────────────┘ └───────────┘ └──────────────┘    │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Routers                                                                    │
 │  ┌──────────────────┐ ┌─────────────┐ ┌────────────────┐                    │
@@ -692,11 +692,18 @@ export DCR_ENCRYPTION_KEY="your-generated-key"
 
 ## Health Endpoints
 
+Health and readiness probes are served on a **separate probe port**, not on the main application port. This lightweight HTTP server starts automatically during app lifespan with no authentication or rate limiting.
+
+- **Agent probes**: port 8002 (configurable via `AGENT_PROBE_PORT`)
+- **Marketplace handler probes**: port 8003 (configurable via `HANDLER_PROBE_PORT`)
+
 ### GET /health
 
 Health check endpoint for load balancers and orchestrators.
 
-**Authentication**: Not required
+**Port**: Probe port (8002 for agent, 8003 for handler)
+
+**Authentication**: Not required (separate port, no auth middleware)
 
 **Response:**
 
@@ -711,7 +718,9 @@ Health check endpoint for load balancers and orchestrators.
 
 Readiness check endpoint indicating the service is ready to accept requests.
 
-**Authentication**: Not required
+**Port**: Probe port (8002 for agent, 8003 for handler)
+
+**Authentication**: Not required (separate port, no auth middleware)
 
 **Response:**
 
@@ -813,8 +822,8 @@ print(result["result"]["artifacts"][0]["parts"][0]["text"])
 # Get AgentCard
 curl http://localhost:8000/.well-known/agent.json
 
-# Health check
-curl http://localhost:8000/health
+# Health check (probe port)
+curl http://localhost:8002/health
 
 # Send message (with auth)
 curl -X POST http://localhost:8000/ \

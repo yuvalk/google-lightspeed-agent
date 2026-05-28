@@ -1,13 +1,13 @@
 """Data models for Dynamic Client Registration (DCR)."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class DCRErrorCode(str, Enum):
+class DCRErrorCode(StrEnum):
     """DCR error codes per RFC 7591."""
 
     INVALID_REQUEST = "invalid_request"
@@ -83,23 +83,12 @@ class GoogleJWTClaims(BaseModel):
 class DCRRequest(BaseModel):
     """DCR request payload.
 
-    Contains the software_statement JWT signed by Google, and optionally
-    static client credentials (client_id + client_secret) per RFC 7591.
-    When static credentials are provided and DCR_ENABLED=false, they are
-    validated against Red Hat SSO and stored for the order.
+    Contains the software_statement JWT signed by Google.
     """
 
     software_statement: str = Field(
         ...,
         description="JWT signed by Google containing registration claims",
-    )
-    client_id: str | None = Field(
-        None,
-        description="Pre-registered OAuth 2.0 client identifier (static credentials mode)",
-    )
-    client_secret: str | None = Field(
-        None,
-        description="Pre-registered OAuth 2.0 client secret (static credentials mode)",
     )
 
 
@@ -122,27 +111,27 @@ class DCRResponse(BaseModel):
         description="Secret expiration (0 = never expires)",
     )
     client_id_issued_at: int | None = Field(
-        None,
+        default=None,
         description="Timestamp when client_id was issued",
     )
     registration_access_token: str | None = Field(
-        None,
+        default=None,
         description="Token for accessing registration endpoint",
     )
     registration_client_uri: str | None = Field(
-        None,
+        default=None,
         description="URI for client configuration endpoint",
     )
     redirect_uris: list[str] | None = Field(
-        None,
+        default=None,
         description="Registered redirect URIs",
     )
     grant_types: list[str] | None = Field(
-        None,
+        default=None,
         description="Allowed grant types",
     )
     token_endpoint_auth_method: str | None = Field(
-        None,
+        default=None,
         description="Token endpoint authentication method",
     )
 

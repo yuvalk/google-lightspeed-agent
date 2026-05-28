@@ -39,8 +39,8 @@ async def hybrid_dcr_handler(request: Request) -> JSONResponse:
 
     2. **Pub/Sub Event** (from Google Cloud Marketplace):
        - Contains `message` with base64-encoded data
-       - Processes procurement events (account/entitlement creation)
-       - Approves via Procurement API
+       - Filters events by product (SERVICE_CONTROL_SERVICE_NAME)
+       - Processes account and entitlement events
        - Asynchronous flow
 
     Returns:
@@ -48,8 +48,8 @@ async def hybrid_dcr_handler(request: Request) -> JSONResponse:
     """
     try:
         body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from e
 
     # Route based on request content
     if "software_statement" in body:
@@ -81,8 +81,6 @@ async def _handle_dcr_request(body: dict[str, Any]) -> JSONResponse:
     dcr_service = get_dcr_service()
     dcr_request = DCRRequest(
         software_statement=body["software_statement"],
-        client_id=body.get("client_id"),
-        client_secret=body.get("client_secret"),
     )
 
     result = await dcr_service.register_client(dcr_request)
@@ -142,6 +140,26 @@ async def _handle_pubsub_event(body: dict[str, Any]) -> JSONResponse:
     event_type_str = data.get("eventType", "")
     logger.info("Marketplace event type: %s", event_type_str)
 
+    # Product-level filtering: in multi-agent deployments, a single Pub/Sub
+    # topic is shared across all agents in the same project. Filter events
+    # by product to ensure each agent only processes its own entitlements.
+    settings = get_settings()
+    entitlement_data = data.get("entitlement")
+    product = entitlement_data.get("product") if entitlement_data else None
+
+    if product and settings.service_control_service_name:
+        # Strip the "products/" prefix if present
+        product_id = product.removeprefix("products/")
+        if product_id != settings.service_control_service_name:
+            logger.info(
+                "Skipping event for different product: %s (expected %s)",
+                product_id,
+                settings.service_control_service_name,
+            )
+            return JSONResponse(
+                content={"status": "ok", "message": "Event not for this product"}
+            )
+
     # Try to parse as a known event type
     try:
         event_type = ProcurementEventType(event_type_str)
@@ -155,12 +173,20 @@ async def _handle_pubsub_event(body: dict[str, Any]) -> JSONResponse:
         logger.warning("Could not build procurement event from data")
         return JSONResponse(content={"status": "ok", "message": "Invalid event data"})
 
-    # Process the event
+    # Process the event — let failures propagate as 500 so Pub/Sub retries.
     procurement_service = get_procurement_service()
-    await procurement_service.process_event(event)
+    try:
+        await procurement_service.process_event(event)
+    except Exception as e:
+        logger.exception("Failed to process marketplace event %s: %s", message_id, e)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "event_processing_failed", "message": str(e)},
+        )
 
+    order_id = event.entitlement.id if event.entitlement else None
     logger.info("Processed marketplace event: %s (%s)", message_id, event_type_str)
-    return JSONResponse(content={"status": "ok", "event_type": event_type_str})
+    return JSONResponse(content={"status": "success", "orderId": order_id})
 
 
 def _build_procurement_event(
@@ -201,7 +227,7 @@ def _build_procurement_event(
     if account_id:
         account_info = AccountInfo(
             id=account_id,
-            update_time=account_data.get("updateTime"),
+            updateTime=account_data.get("updateTime"),
         )
 
     # Extract entitlement info (multiple possible locations)
@@ -219,18 +245,19 @@ def _build_procurement_event(
     if entitlement_id:
         entitlement_info = EntitlementInfo(
             id=entitlement_id,
-            new_plan=entitlement_data.get("newPlan") or entitlement_data.get("plan"),
-            previous_plan=entitlement_data.get("previousPlan"),
-            new_offer_start_time=entitlement_data.get("newOfferStartTime"),
-            new_offer_end_time=entitlement_data.get("newOfferEndTime"),
-            cancellation_reason=entitlement_data.get("cancellationReason"),
-            update_time=entitlement_data.get("updateTime"),
+            newPlan=entitlement_data.get("newPlan") or entitlement_data.get("plan"),
+            previousPlan=entitlement_data.get("previousPlan"),
+            product=entitlement_data.get("product"),
+            newOfferStartTime=entitlement_data.get("newOfferStartTime"),
+            newOfferEndTime=entitlement_data.get("newOfferEndTime"),
+            cancellationReason=entitlement_data.get("cancellationReason"),
+            updateTime=entitlement_data.get("updateTime"),
         )
 
     return ProcurementEvent(
-        event_id=event_id,
-        event_type=event_type,
-        provider_id=provider_id,
+        eventId=event_id,
+        eventType=event_type,
+        providerId=provider_id,
         account=account_info,
         entitlement=entitlement_info,
     )

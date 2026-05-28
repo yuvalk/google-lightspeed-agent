@@ -13,8 +13,15 @@ Configuration is managed through environment variables. Copy `.env.example` to `
 | `GOOGLE_GENAI_USE_VERTEXAI` | `FALSE` | Use Vertex AI instead of Google AI Studio |
 | `GOOGLE_API_KEY` | - | Google AI Studio API key (required if not using Vertex AI) |
 | `GOOGLE_CLOUD_PROJECT` | - | GCP project ID (required for Vertex AI) |
-| `GOOGLE_CLOUD_LOCATION` | `us-central1` | GCP region for Vertex AI |
+| `GOOGLE_CLOUD_LOCATION` | `global` | Vertex AI model location (use `global` for pay-as-you-go) |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model to use |
+| `GEMINI_HTTP_RETRY_ATTEMPTS` | `5` | Max HTTP attempts per model call (including the first). Use `1` to disable SDK retries. Aligns with [google-genai defaults](https://cloud.google.com/vertex-ai/generative-ai/docs/retry-strategy). |
+| `GEMINI_HTTP_RETRY_INITIAL_DELAY` | `1.0` | Initial backoff delay in seconds (exponential backoff with jitter). |
+| `GEMINI_HTTP_RETRY_MAX_DELAY` | `60.0` | Maximum delay in seconds between retries. |
+| `GEMINI_HTTP_RETRY_EXP_BASE` | `2.0` | Backoff multiplier between attempts. |
+| `GEMINI_HTTP_RETRY_JITTER` | `1.0` | Jitter factor to reduce synchronized retries across clients. |
+
+HTTP retries use **exponential backoff with jitter** via the Google Gen AI SDK for transient errors (for example HTTP 429, 408, and 5xx). Retries help with short spikes; they do **not** replace raising [Vertex AI quotas](https://cloud.google.com/vertex-ai/generative-ai/docs/quotas) or fixing sustained overload. See the [Vertex AI retry strategy](https://cloud.google.com/vertex-ai/generative-ai/docs/retry-strategy) documentation.
 
 **Using Google AI Studio:**
 
@@ -28,7 +35,7 @@ GOOGLE_API_KEY=your-api-key
 ```bash
 GOOGLE_GENAI_USE_VERTEXAI=TRUE
 GOOGLE_CLOUD_PROJECT=your-project-id
-GOOGLE_CLOUD_LOCATION=us-central1
+GOOGLE_CLOUD_LOCATION=global
 ```
 
 ### Red Hat SSO / OAuth 2.0
@@ -38,7 +45,8 @@ GOOGLE_CLOUD_LOCATION=us-central1
 | `RED_HAT_SSO_ISSUER` | `https://sso.redhat.com/auth/realms/redhat-external` | SSO issuer URL |
 | `RED_HAT_SSO_CLIENT_ID` | - | Resource Server client ID (used for token introspection) |
 | `RED_HAT_SSO_CLIENT_SECRET` | - | Resource Server client secret |
-| `AGENT_REQUIRED_SCOPE` | `agent:insights` | OAuth scope required in access tokens |
+| `AGENT_REQUIRED_SCOPE` | `api.console,api.ocm` | Comma-separated OAuth scopes required in access tokens |
+| `AGENT_ALLOWED_SCOPES` | `openid,profile,email,api.console,api.ocm` | Comma-separated allowlist of permitted scopes. Tokens with scopes outside this list are rejected (403). |
 
 **Example:**
 
@@ -50,29 +58,18 @@ RED_HAT_SSO_CLIENT_SECRET=my-client-secret
 
 ### Red Hat Lightspeed MCP
 
-The MCP server runs as a sidecar container and provides tools for accessing Red Hat Insights APIs. See [MCP Integration](mcp-integration.md) for details.
+The MCP server runs as a sidecar container and provides tools for accessing Red Hat Insights APIs. The agent forwards the caller's JWT token to the MCP server, which uses it to authenticate with console.redhat.com on behalf of the user. See [MCP Integration](mcp-integration.md) for details.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LIGHTSPEED_CLIENT_ID` | - | Insights service account client ID |
-| `LIGHTSPEED_CLIENT_SECRET` | - | Insights service account client secret |
 | `MCP_TRANSPORT_MODE` | `http` | MCP transport: `stdio`, `http`, or `sse` |
 | `MCP_SERVER_URL` | `http://localhost:8080` | MCP server URL (use 8081 for Podman to avoid A2A Inspector conflict) |
 | `MCP_READ_ONLY` | `true` | Enable read-only mode for MCP tools |
-
-**Obtaining Lightspeed Credentials:**
-
-1. Go to [console.redhat.com](https://console.redhat.com)
-2. Navigate to **Settings** → **Integrations** → **Red Hat Lightspeed**
-3. Create a service account
-4. Copy the Client ID and Client Secret
 
 **Development (stdio mode):**
 
 ```bash
 # Agent spawns MCP server as subprocess
-LIGHTSPEED_CLIENT_ID=your-service-account-id
-LIGHTSPEED_CLIENT_SECRET=your-service-account-secret
 MCP_TRANSPORT_MODE=stdio
 MCP_READ_ONLY=true
 ```
@@ -81,8 +78,6 @@ MCP_READ_ONLY=true
 
 ```bash
 # Agent connects to MCP server sidecar via HTTP
-LIGHTSPEED_CLIENT_ID=your-service-account-id
-LIGHTSPEED_CLIENT_SECRET=your-service-account-secret
 MCP_TRANSPORT_MODE=http
 MCP_SERVER_URL=http://localhost:8081  # Use 8081 for Podman (8080 for Cloud Run)
 MCP_READ_ONLY=true
@@ -92,7 +87,8 @@ MCP_READ_ONLY=true
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGENT_PROVIDER_URL` | `https://localhost:8000` | Agent public URL (for AgentCard) |
+| `AGENT_PROVIDER_URL` | `https://localhost:8000` | Agent base URL (where the A2A agent can be reached) |
+| `AGENT_PROVIDER_ORGANIZATION_URL` | `https://www.redhat.com` | Provider's organization website URL. Used in AgentCard `provider.url` and as the expected JWT audience for Google DCR |
 | `AGENT_NAME` | `lightspeed_agent` | Agent name |
 | `AGENT_DESCRIPTION` | Red Hat Lightspeed Agent for Google Cloud | Agent description |
 | `AGENT_HOST` | `0.0.0.0` | Server bind address |
@@ -112,7 +108,12 @@ AGENT_PORT=8000
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | `sqlite+aiosqlite:///./lightspeed_agent.db` | Marketplace database connection URL (orders, DCR clients, auth) |
-| `SESSION_DATABASE_URL` | (uses DATABASE_URL) | Session database URL for ADK sessions. Optional - for security isolation. |
+| `SESSION_BACKEND` | `memory` | Session storage backend: `memory` (in-memory, no persistence) or `database` (PostgreSQL, persistent) |
+| `SESSION_DATABASE_URL` | *(empty)* | Session database URL for ADK sessions. Required when `SESSION_BACKEND=database`. |
+
+> **Note:** Setting `SESSION_BACKEND=database` without providing `SESSION_DATABASE_URL`
+> will cause a startup validation error. This is intentional to prevent running
+> production workloads without session persistence.
 
 **SQLite (Development):**
 
@@ -132,11 +133,14 @@ DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/lightspeed_agent
 DATABASE_URL=postgresql+asyncpg://user:password@/lightspeed_agent?host=/cloudsql/project:region:instance
 ```
 
-**Security Isolation (Optional):**
+**Security Isolation (Recommended for Production):**
 
-For production deployments, you can use separate databases for marketplace data and agent sessions:
+For production deployments, use `SESSION_BACKEND=database` with a separate database for agent sessions:
 
 ```bash
+# Explicit database backend for sessions
+SESSION_BACKEND=database
+
 # Shared marketplace database (orders, DCR clients, auth data)
 DATABASE_URL=postgresql+asyncpg://marketplace:pass@db:5432/marketplace
 
@@ -149,14 +153,23 @@ This separation ensures:
 - Compromised agents can't access DCR credentials or order information
 - Different retention policies can be applied to sessions vs. marketplace data
 
+**Switching to In-Memory Sessions:**
+
+To disable database session persistence on a running deployment (e.g., for debugging),
+set `SESSION_BACKEND=memory` and redeploy:
+
+- **Cloud Run:** Update the `SESSION_BACKEND` env var to `memory` and redeploy the service.
+- **Podman:** Update `SESSION_BACKEND` in the ConfigMap to `memory` and restart the pod.
+
 ### Dynamic Client Registration (DCR)
 
 DCR allows Google Cloud Marketplace customers to automatically register as OAuth clients.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DCR_ENABLED` | `true` | `true`: real DCR via Red Hat SSO (Keycloak). `false`: accepts static `client_id`/`client_secret` from the DCR request body, validates them against the token endpoint, and stores them. |
-| `DCR_INITIAL_ACCESS_TOKEN` | - | Initial access token for Red Hat SSO DCR endpoint |
+| `GMA_CLIENT_ID` | - | Client ID for GMA SSO API (client_credentials grant with `api.iam.clients.gma` scope) |
+| `GMA_CLIENT_SECRET` | - | Client secret for GMA SSO API |
+| `GMA_API_BASE_URL` | `https://sso.redhat.com/auth/realms/redhat-external/apis/beta/acs/v1/` | GMA SSO API base URL |
 | `DCR_ENCRYPTION_KEY` | - | Fernet key for encrypting stored client secrets |
 | `DCR_CLIENT_NAME_PREFIX` | `gemini-order-` | Prefix for generated client names |
 
@@ -169,8 +182,8 @@ python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 **Example Configuration:**
 
 ```bash
-DCR_ENABLED=true
-DCR_INITIAL_ACCESS_TOKEN=your-keycloak-initial-access-token
+GMA_CLIENT_ID=your-gma-client-id
+GMA_CLIENT_SECRET=your-gma-client-secret
 DCR_ENCRYPTION_KEY=your-generated-fernet-key
 DCR_CLIENT_NAME_PREFIX=gemini-order-
 ```
@@ -183,7 +196,8 @@ Rate limiting uses a Redis-backed sliding window algorithm for distributed deplo
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RATE_LIMIT_REDIS_URL` | `redis://localhost:6379/0` | Redis URL used for rate limiting |
+| `RATE_LIMIT_REDIS_URL` | `redis://localhost:6379/0` | Redis URL used for rate limiting. Use `rediss://` (double s) for TLS in production. |
+| `RATE_LIMIT_REDIS_CA_CERT` | (empty) | Path to Redis server CA certificate for TLS verification. Required when using `rediss://` with Cloud Memorystore. |
 | `RATE_LIMIT_REDIS_TIMEOUT_MS` | `200` | Redis operation timeout in milliseconds |
 | `RATE_LIMIT_KEY_PREFIX` | `lightspeed:ratelimit` | Prefix for Redis rate limit keys |
 | `RATE_LIMIT_REQUESTS_PER_MINUTE` | `60` | Max requests per minute |
@@ -192,7 +206,11 @@ Rate limiting uses a Redis-backed sliding window algorithm for distributed deplo
 **Example:**
 
 ```bash
+# Local development (no TLS)
 RATE_LIMIT_REDIS_URL=redis://localhost:6379/0
+# Production with Cloud Memorystore (TLS enabled, port 6378)
+# RATE_LIMIT_REDIS_URL=rediss://10.x.x.x:6378/0
+# RATE_LIMIT_REDIS_CA_CERT=/secrets/redis-ca-cert/latest
 RATE_LIMIT_REDIS_TIMEOUT_MS=200
 RATE_LIMIT_KEY_PREFIX=lightspeed:ratelimit
 RATE_LIMIT_REQUESTS_PER_MINUTE=120
@@ -231,12 +249,90 @@ See [Usage Tracking and Metering](metering.md) for details on the plugin system 
 |----------|---------|-------------|
 | `LOG_LEVEL` | `INFO` | Log level: DEBUG, INFO, WARNING, ERROR |
 | `LOG_FORMAT` | `json` | Log format: `json` or `text` |
+| `AGENT_LOGGING_DETAIL` | `basic` | Agent execution logging detail: `basic` or `detailed` |
+| `TOOL_RESULT_MAX_CHARS` | `51200` | Max character length for MCP tool results sent to the LLM. Oversized results are replaced with a message advising the user to narrow down or paginate. Set to `0` to disable. |
 
 **Example:**
 
 ```bash
 LOG_LEVEL=DEBUG
 LOG_FORMAT=text  # Human-readable for development
+AGENT_LOGGING_DETAIL=detailed  # Include tool args/results in logs
+```
+
+#### MCP Output Size Guard
+
+MCP tools can return very large responses (e.g., listing all advisories or inventory systems). These responses are passed in full to the LLM as input context, which can inflate token counts significantly (270K+ tokens observed) and trigger Vertex AI token-per-minute (TPM) rate limits (HTTP 429 `RESOURCE_EXHAUSTED`).
+
+The `TOOL_RESULT_MAX_CHARS` setting controls a size guard that detects oversized tool results and replaces them with an actionable message telling the LLM to guide the user toward narrowing down their query or using pagination.
+
+```bash
+# Default: 50K characters (conservative, works within standard TPM quotas)
+TOOL_RESULT_MAX_CHARS=51200
+
+# Allow larger results if you have higher TPM quotas
+TOOL_RESULT_MAX_CHARS=100000
+
+# Disable the guard entirely (not recommended — may cause 429 errors)
+TOOL_RESULT_MAX_CHARS=0
+```
+
+When a result exceeds the limit, the LLM receives an error message instead of the raw data, allowing it to inform the user and suggest alternatives. Monitor `Tool result too large` warning logs to track which tools trigger the guard.
+
+**Choosing the right limit:** The optimal value depends on the model's context window and expected session length. Each tool result, along with all previous messages and tool results in the conversation, counts toward the model's input token budget. Longer sessions accumulate more context, leaving less room for individual tool results. A conservative limit (the default) works well for multi-turn sessions where context builds up over time. If your sessions are typically short (single-turn queries), you can increase the limit to allow richer results without risk of hitting context or TPM limits.
+
+#### Audit Logging
+
+The `LOG_FORMAT` setting controls how log records are formatted:
+
+- **`json`** (default) — Structured JSON output. Every log record automatically includes audit context fields (`user_id`, `org_id`, `order_id`, `request_id`). Recommended for production and Cloud Run, where Cloud Logging parses these fields for querying.
+- **`text`** — Human-readable output (`timestamp - logger - level - message`). Audit context fields are **not** included in the log record. The agent execution plugin still embeds `user_id`, `org_id`, `order_id`, and `request_id` in the log message text, but they are not available as structured fields for filtering. Recommended for local development.
+
+When `LOG_FORMAT=json`, every log record automatically includes audit context fields:
+
+| Field | Source | Description |
+|-------|--------|-------------|
+| `user_id` | JWT `sub` claim | Authenticated user identifier |
+| `org_id` | JWT `org_id` claim | Red Hat organization identifier |
+| `order_id` | DCR client lookup | Google Cloud Marketplace order |
+| `request_id` | Generated UUID4 | Per-request correlation ID |
+
+These fields enable:
+- **Request correlation** — all events in a single request share the same `request_id`
+- **User audit** — filter by `user_id` to trace all actions by a specific user
+- **Organization audit** — filter by `org_id` for organization-level auditing
+- **Data lineage** — `tool_call_completed` events include `data_source=<mcp_tool>`, and `mcp_jwt_forwarded` events prove data was retrieved using the user's authorized JWT
+
+Each agent lifecycle event is tagged with an `event_type` in the log message:
+
+| Event Type | Description |
+|------------|-------------|
+| `request_authenticated` | User JWT validated, user_id and org_id extracted |
+| `agent_run_started` | ADK agent invocation started |
+| `agent_run_completed` | ADK agent invocation finished |
+| `llm_call_started` | Gemini LLM call initiated |
+| `llm_call_completed` | Gemini LLM call finished (includes token counts) |
+| `tool_call_started` | MCP tool call initiated |
+| `tool_call_completed` | MCP tool call finished (includes `data_source`) |
+| `mcp_jwt_forwarded` | User JWT forwarded to MCP sidecar for Red Hat API auth |
+
+**Example JSON log line:**
+
+```json
+{"time": "2025-01-15 10:30:45", "level": "INFO", "logger": "lightspeed_agent.api.a2a.logging_plugin", "message": "Tool call completed (event_type=tool_call_completed, tool=get_advisories, data_source=get_advisories, ...)", "user_id": "user-42", "org_id": "org-7", "order_id": "order-99", "request_id": "abc-123-def-456"}
+```
+
+On Cloud Run, these JSON logs are automatically parsed by Cloud Logging and can be queried with:
+
+```bash
+# Find all actions by a specific user
+gcloud logging read 'jsonPayload.user_id="user-42"' --project=$GOOGLE_CLOUD_PROJECT
+
+# Find all tool calls in a specific request
+gcloud logging read 'jsonPayload.request_id="abc-123" AND jsonPayload.message=~"tool_call"' --project=$GOOGLE_CLOUD_PROJECT
+
+# Audit all MCP data access for an organization
+gcloud logging read 'jsonPayload.org_id="org-7" AND jsonPayload.message=~"mcp_jwt_forwarded"' --project=$GOOGLE_CLOUD_PROJECT
 ```
 
 ### Development Settings
@@ -253,6 +349,7 @@ DEBUG=true
 SKIP_JWT_VALIDATION=true
 LOG_LEVEL=DEBUG
 LOG_FORMAT=text
+AGENT_LOGGING_DETAIL=detailed
 ```
 
 **Production:**
@@ -262,6 +359,7 @@ DEBUG=false
 SKIP_JWT_VALIDATION=false
 LOG_LEVEL=INFO
 LOG_FORMAT=json
+AGENT_LOGGING_DETAIL=basic
 ```
 
 ## Configuration Files
@@ -346,8 +444,6 @@ These fields must be set for the agent to start:
 
 - `GOOGLE_API_KEY` (if not using Vertex AI)
 - `GOOGLE_CLOUD_PROJECT` (if using Vertex AI)
-- `LIGHTSPEED_CLIENT_ID`
-- `LIGHTSPEED_CLIENT_SECRET`
 
 ### Validation Errors
 
@@ -369,7 +465,9 @@ DEBUG=true
 SKIP_JWT_VALIDATION=true
 LOG_LEVEL=DEBUG
 LOG_FORMAT=text
+AGENT_LOGGING_DETAIL=detailed
 DATABASE_URL=sqlite+aiosqlite:///./dev.db
+SESSION_BACKEND=memory
 ```
 
 ### Staging
@@ -381,6 +479,8 @@ SKIP_JWT_VALIDATION=false
 LOG_LEVEL=INFO
 LOG_FORMAT=json
 DATABASE_URL=postgresql+asyncpg://user:pass@staging-db:5432/insights
+SESSION_BACKEND=database
+SESSION_DATABASE_URL=postgresql+asyncpg://sessions:pass@staging-db:5432/sessions
 ```
 
 ### Production
@@ -391,5 +491,6 @@ DEBUG=false
 SKIP_JWT_VALIDATION=false
 LOG_LEVEL=INFO
 LOG_FORMAT=json
-# DATABASE_URL from Secret Manager
+SESSION_BACKEND=database
+# DATABASE_URL and SESSION_DATABASE_URL from Secret Manager
 ```

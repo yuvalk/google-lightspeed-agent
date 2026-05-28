@@ -1,9 +1,10 @@
 """Application settings and configuration management."""
 
+import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,12 +32,42 @@ class Settings(BaseSettings):
         description="Google Cloud project ID for Vertex AI",
     )
     google_cloud_location: str = Field(
-        default="us-central1",
-        description="Google Cloud location for Vertex AI",
+        default="global",
+        description="Google Cloud location for Vertex AI (use 'global' for pay-as-you-go)",
     )
     gemini_model: str = Field(
         default="gemini-2.5-flash",
         description="Gemini model to use",
+    )
+    gemini_http_retry_attempts: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "Max HTTP attempts per Gemini call (including the first request). "
+            "Set to 1 to disable SDK retries. Matches google-genai default (5)."
+        ),
+    )
+    gemini_http_retry_initial_delay: float = Field(
+        default=1.0,
+        gt=0,
+        description=(
+            "Initial backoff delay in seconds before the first retry (exponential backoff)."
+        ),
+    )
+    gemini_http_retry_max_delay: float = Field(
+        default=60.0,
+        gt=0,
+        description="Maximum delay in seconds between retries.",
+    )
+    gemini_http_retry_exp_base: float = Field(
+        default=2.0,
+        gt=0,
+        description="Multiplier for exponential backoff between attempts.",
+    )
+    gemini_http_retry_jitter: float = Field(
+        default=1.0,
+        ge=0,
+        description="Jitter factor for backoff (reduces synchronized retries).",
     )
 
     # Red Hat SSO Configuration
@@ -53,14 +84,6 @@ class Settings(BaseSettings):
         description="OAuth client secret for Red Hat SSO",
     )
     # Red Hat Lightspeed MCP Configuration
-    lightspeed_client_id: str = Field(
-        default="",
-        description="Lightspeed service account client ID",
-    )
-    lightspeed_client_secret: str = Field(
-        default="",
-        description="Lightspeed service account client secret",
-    )
     mcp_transport_mode: Literal["stdio", "http", "sse"] = Field(
         default="stdio",
         description="MCP server transport mode",
@@ -77,14 +100,33 @@ class Settings(BaseSettings):
     # Agent Configuration
     agent_provider_url: str = Field(
         default="https://localhost:8000",
-        description="Agent provider URL for AgentCard",
+        description="Agent base URL (where the A2A agent can be reached)",
+    )
+    agent_provider_organization_url: str = Field(
+        default="https://www.redhat.com",
+        description=(
+            "Agent provider's organization website URL."
+            " Used in AgentCard provider.url and as the expected JWT audience"
+            " for Google DCR software_statement validation."
+        ),
     )
     agent_name: str = Field(
         default="lightspeed_agent",
         description="Agent name (must be a valid Python identifier)",
     )
-    agent_description: str = Field(
+    agent_display_name: str = Field(
         default="Red Hat Lightspeed Agent for Google Cloud",
+        description="Human-readable agent name for the AgentCard",
+    )
+    agent_description: str = Field(
+        default=(
+            "Red Hat Lightspeed Agent for Google Cloud is an A2A-ready Agent "
+            "that leverages Red Hat Lightspeed Model Context Protocol (MCP) to "
+            "connect to Red Hat Lightspeed services, providing information about "
+            "your Red Hat account, subscription, system configuration, and "
+            "related details. This feature uses AI technology. Always review "
+            "AI-generated content prior to use."
+        ),
         description="Agent description",
     )
     agent_host: str = Field(
@@ -95,18 +137,28 @@ class Settings(BaseSettings):
         default=8000,
         description="Server port",
     )
+    agent_probe_port: int = Field(
+        default=8002,
+        description="Port for health/readiness probe server",
+    )
 
     # Marketplace Handler Configuration
     # The marketplace handler is a separate service that handles DCR and Pub/Sub events
     marketplace_handler_url: str = Field(
         default="",
-        description="URL of the marketplace handler service for DCR. If empty, uses agent_provider_url.",
+        description=(
+            "URL of the marketplace handler service for DCR."
+            " If empty, uses agent_provider_url."
+        ),
     )
 
     # Google Cloud Service Control
     service_control_service_name: str = Field(
         default="",
-        description="Service name for Google Cloud Service Control (e.g., myservice.gcpmarketplace.example.com)",
+        description=(
+            "Service name for Google Cloud Service Control"
+            " (e.g., myservice.gcpmarketplace.example.com)"
+        ),
     )
     service_control_enabled: bool = Field(
         default=True,
@@ -137,7 +189,11 @@ class Settings(BaseSettings):
     )
     rate_limit_redis_url: str = Field(
         default="redis://localhost:6379/0",
-        description="Redis URL for distributed rate limiting",
+        description="Redis URL for distributed rate limiting (use rediss:// for TLS)",
+    )
+    rate_limit_redis_ca_cert: str = Field(
+        default="",
+        description="Path to Redis server CA certificate for TLS verification",
     )
     rate_limit_redis_timeout_ms: int = Field(
         default=200,
@@ -157,23 +213,56 @@ class Settings(BaseSettings):
         default="json",
         description="Log format",
     )
+    agent_logging_detail: Literal["basic", "detailed"] = Field(
+        default="basic",
+        description="Agent execution logging detail level. "
+        "'basic' logs tool names and token counts. "
+        "'detailed' also logs tool arguments and truncated results.",
+    )
+    tool_result_max_chars: int = Field(
+        default=204800,
+        ge=0,
+        description=(
+            "Maximum character length for MCP tool results sent to the LLM. "
+            "Oversized results are replaced with a message advising the user "
+            "to narrow down or paginate. Set to 0 to disable."
+        ),
+    )
 
     # DCR (Dynamic Client Registration) Configuration
-    dcr_enabled: bool = Field(
-        default=True,
-        description="Enable real DCR with Red Hat SSO (Keycloak). When disabled, uses pre-seeded credentials from the database.",
-    )
-    dcr_initial_access_token: str = Field(
-        default="",
-        description="Keycloak Initial Access Token for creating OAuth clients via DCR",
-    )
     dcr_client_name_prefix: str = Field(
         default="gemini-order-",
         description="Prefix for OAuth client names created via DCR",
     )
     dcr_encryption_key: str = Field(
         default="",
-        description="Fernet encryption key for DCR client secrets (generate with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')",
+        description=(
+            "Fernet encryption key for DCR client secrets"
+            " (generate with: python -c"
+            " 'from cryptography.fernet import Fernet;"
+            " print(Fernet.generate_key().decode())')"
+        ),
+    )
+
+    # GMA SSO API credentials (for DCR tenant creation)
+    gma_client_id: str = Field(
+        default="",
+        description=(
+            "Client ID for GMA SSO API"
+            " (client_credentials grant with api.iam.clients.gma scope)"
+        ),
+    )
+    gma_client_secret: str = Field(
+        default="",
+        description="Client secret for GMA SSO API",
+    )
+    gma_api_base_url: str = Field(
+        default="https://sso.redhat.com/auth/realms/redhat-external/apis/beta/acs/v1/",
+        description="GMA SSO API base URL for tenant creation",
+    )
+    gma_api_timeout: int = Field(
+        default=30,
+        description="Timeout in seconds for GMA API requests",
     )
 
     # Database Configuration
@@ -181,7 +270,10 @@ class Settings(BaseSettings):
     # This is shared between the marketplace handler and agent for order validation
     database_url: str = Field(
         default="sqlite+aiosqlite:///./lightspeed_agent.db",
-        description="Marketplace database URL (PostgreSQL for production). Stores accounts, entitlements, DCR clients.",
+        description=(
+            "Marketplace database URL (PostgreSQL for production)."
+            " Stores accounts, entitlements, DCR clients."
+        ),
     )
     database_pool_size: int = Field(
         default=5,
@@ -192,44 +284,77 @@ class Settings(BaseSettings):
         description="Maximum overflow connections beyond pool size",
     )
 
-    # Session database: stores ADK sessions, conversation history, memory
+    # Session configuration: controls ADK session storage backend
     # Separate from marketplace DB for security isolation - each agent can have its own
+    session_backend: Literal["memory", "database"] = Field(
+        default="memory",
+        description=(
+            "Session storage backend. "
+            "'memory' uses in-memory sessions (lost on restart). "
+            "'database' uses DatabaseSessionService and requires SESSION_DATABASE_URL."
+        ),
+    )
     session_database_url: str = Field(
         default="",
-        description="Session database URL for ADK sessions. If empty, uses DATABASE_URL. For security isolation, use a separate database.",
+        description=(
+            "Session database URL for ADK sessions."
+            " Required when SESSION_BACKEND=database."
+            " For security isolation, use a separate database from DATABASE_URL."
+        ),
     )
 
-    # Agent required scope for token introspection
+    # Agent required scopes for token introspection (comma-separated)
     agent_required_scope: str = Field(
-        default="agent:insights",
-        description="OAuth scope required in access tokens. Checked via token introspection.",
+        default="api.console,api.ocm",
+        description=(
+            "Comma-separated OAuth scopes required in access tokens."
+            " Checked via token introspection."
+        ),
+    )
+
+    # Agent allowed scopes (comma-separated allowlist)
+    agent_allowed_scopes: str = Field(
+        default="openid,profile,email,api.console,api.ocm",
+        description=(
+            "Comma-separated allowlist of OAuth scopes permitted in access tokens."
+            " Tokens carrying scopes outside this list are rejected (HTTP 403)."
+        ),
     )
 
     @property
-    def keycloak_introspection_endpoint(self) -> str:
-        """Get the Keycloak token introspection endpoint URL."""
+    def cors_origins_list(self) -> list[str]:
+        """Parse comma-separated cors_allowed_origins into a list."""
+        return [s.strip() for s in self.cors_allowed_origins.split(",") if s.strip()]
+
+    @property
+    def required_scopes_list(self) -> list[str]:
+        """Parse comma-separated agent_required_scope into a list."""
+        return [s.strip() for s in self.agent_required_scope.split(",") if s.strip()]
+
+    @property
+    def allowed_scopes_list(self) -> list[str]:
+        """Parse comma-separated agent_allowed_scopes into a list."""
+        return [s.strip() for s in self.agent_allowed_scopes.split(",") if s.strip()]
+
+    @property
+    def sso_introspection_endpoint(self) -> str:
+        """Get the Red Hat SSO token introspection endpoint URL."""
         return f"{self.red_hat_sso_issuer}/protocol/openid-connect/token/introspect"
 
     @property
-    def keycloak_token_endpoint(self) -> str:
-        """Get the Keycloak token endpoint URL."""
+    def sso_token_endpoint(self) -> str:
+        """Get the Red Hat SSO token endpoint URL."""
         return f"{self.red_hat_sso_issuer}/protocol/openid-connect/token"
 
-    @property
-    def keycloak_admin_api_base(self) -> str:
-        """Get the Keycloak Admin REST API base URL.
-
-        Derived from the issuer by inserting /admin before /realms/.
-        E.g. https://host/auth/realms/myrealm -> https://host/auth/admin/realms/myrealm
-        """
-        return self.red_hat_sso_issuer.replace("/realms/", "/admin/realms/", 1)
-
-    @property
-    def keycloak_dcr_endpoint(self) -> str:
-        """Get the Keycloak DCR endpoint URL."""
-        # Red Hat SSO issuer format: https://sso.redhat.com/auth/realms/redhat-external
-        # DCR endpoint: https://sso.redhat.com/auth/realms/redhat-external/clients-registrations/openid-connect
-        return f"{self.red_hat_sso_issuer}/clients-registrations/openid-connect"
+    # CORS Configuration
+    cors_allowed_origins: str = Field(
+        default="",
+        description=(
+            "Comma-separated list of allowed CORS origins."
+            " In debug mode, defaults to '*' (allow all)."
+            " In production, CORS is disabled when empty."
+        ),
+    )
 
     # Development Settings
     debug: bool = Field(
@@ -240,6 +365,32 @@ class Settings(BaseSettings):
         default=False,
         description="Skip JWT validation (development only)",
     )
+
+    @model_validator(mode="after")
+    def _block_skip_jwt_in_production(self) -> "Settings":
+        """Prevent SKIP_JWT_VALIDATION from being enabled in production.
+
+        Cloud Run sets K_SERVICE automatically. If that variable is present,
+        this is a managed deployment and JWT validation must never be skipped.
+        """
+        if self.skip_jwt_validation and os.getenv("K_SERVICE"):
+            raise ValueError(
+                "SKIP_JWT_VALIDATION=true is not allowed in Cloud Run "
+                f"(K_SERVICE={os.getenv('K_SERVICE')}). "
+                "This setting is intended for local development only."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_session_backend(self) -> "Settings":
+        """Ensure SESSION_DATABASE_URL is set when SESSION_BACKEND=database."""
+        if self.session_backend == "database" and not self.session_database_url:
+            raise ValueError(
+                "SESSION_BACKEND=database requires SESSION_DATABASE_URL to be set. "
+                "Provide a PostgreSQL connection URL, e.g.: "
+                "SESSION_DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/sessions"
+            )
+        return self
 
     # OpenTelemetry Configuration
     otel_enabled: bool = Field(
@@ -262,7 +413,14 @@ class Settings(BaseSettings):
         default="otlp",
         description="Telemetry exporter type",
     )
-    otel_traces_sampler: Literal["always_on", "always_off", "traceidratio", "parentbased_always_on", "parentbased_always_off", "parentbased_traceidratio"] = Field(
+    otel_traces_sampler: Literal[
+        "always_on",
+        "always_off",
+        "traceidratio",
+        "parentbased_always_on",
+        "parentbased_always_off",
+        "parentbased_traceidratio",
+    ] = Field(
         default="always_on",
         description="Trace sampling strategy",
     )

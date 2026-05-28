@@ -40,6 +40,9 @@ spec:
         run.googleapis.com/startup-cpu-boost: "true"
         # Cloud SQL connection
         run.googleapis.com/cloudsql-instances: "${PROJECT_ID}:${REGION}:${DB_INSTANCE_NAME}"
+        # VPC connector for Cloud Memorystore Redis (rate limiting)
+        run.googleapis.com/vpc-access-connector: projects/${PROJECT_ID}/locations/${REGION}/connectors/${VPC_CONNECTOR_NAME}
+        run.googleapis.com/vpc-access-egress: private-ranges-only
     spec:
       containerConcurrency: 80
       timeoutSeconds: 60
@@ -67,16 +70,31 @@ spec:
             # Google Cloud Configuration
             - name: GOOGLE_CLOUD_PROJECT
               value: "${PROJECT_ID}"
-            - name: GOOGLE_CLOUD_LOCATION
-              value: "${REGION}"
+            # Marketplace product identifier (managed service name from
+            # Producer Portal). Required for entitlement approval via the
+            # Procurement API and for product-level event filtering.
+            - name: SERVICE_CONTROL_SERVICE_NAME
+              value: "${SERVICE_CONTROL_SERVICE_NAME}"
             # Red Hat SSO Configuration
             - name: RED_HAT_SSO_ISSUER
               value: "https://sso.redhat.com/auth/realms/redhat-external"
+            # Agent provider's organization website URL.
+            # Used as the expected JWT audience for Google DCR
+            # software_statement validation. Must match the aud claim
+            # Google sends in the software_statement.
+            - name: AGENT_PROVIDER_ORGANIZATION_URL
+              value: "https://www.redhat.com"
+            # Ensure production environment do not skip JWT validation
+            - name: SKIP_JWT_VALIDATION
+              value: "false"
             # DCR Configuration
-            - name: DCR_ENABLED
-              value: "true"
             - name: DCR_CLIENT_NAME_PREFIX
               value: "gemini-order-"
+            # GMA SSO API base URL for tenant creation.
+            # Production: https://sso.redhat.com/auth/realms/redhat-external/apis/beta/acs/v1/
+            # Staging:    https://sso.stage.redhat.com/auth/realms/redhat-external/apis/beta/acs/v1/
+            - name: GMA_API_BASE_URL
+              value: "https://sso.redhat.com/auth/realms/redhat-external/apis/beta/acs/v1/"
             # Secrets from Secret Manager
             - name: RED_HAT_SSO_CLIENT_ID
               valueFrom:
@@ -88,10 +106,15 @@ spec:
                 secretKeyRef:
                   name: redhat-sso-client-secret
                   key: latest
-            - name: DCR_INITIAL_ACCESS_TOKEN
+            - name: GMA_CLIENT_ID
               valueFrom:
                 secretKeyRef:
-                  name: dcr-initial-access-token
+                  name: gma-client-id
+                  key: latest
+            - name: GMA_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: gma-client-secret
                   key: latest
             - name: DCR_ENCRYPTION_KEY
               valueFrom:
@@ -103,20 +126,52 @@ spec:
                 secretKeyRef:
                   name: database-url
                   key: latest
-          # Health checks
+            # Rate Limiting (Redis-backed, shared with Agent service)
+            # Uses rediss:// (TLS) for in-transit encryption to Cloud Memorystore
+            - name: RATE_LIMIT_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rate-limit-redis-url
+                  key: latest
+            # Path to the Cloud Memorystore server CA certificate for TLS verification
+            - name: RATE_LIMIT_REDIS_CA_CERT
+              value: "/secrets/redis-ca-cert/latest"
+            - name: RATE_LIMIT_REDIS_TIMEOUT_MS
+              value: "200"
+            - name: RATE_LIMIT_KEY_PREFIX
+              value: "lightspeed:ratelimit"
+            - name: RATE_LIMIT_REQUESTS_PER_MINUTE
+              value: "60"
+            - name: RATE_LIMIT_REQUESTS_PER_HOUR
+              value: "1000"
+            # Probe server port (health/readiness checks on separate port)
+            - name: HANDLER_PROBE_PORT
+              value: "8003"
+          volumeMounts:
+            - name: redis-ca-cert
+              mountPath: /secrets/redis-ca-cert
+              readOnly: true
+          # Health checks (served by the probe server on a separate port)
           startupProbe:
             httpGet:
               path: /health
-              port: 8001
+              port: 8003
             initialDelaySeconds: 3
             periodSeconds: 5
             failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
-              port: 8001
+              port: 8003
             periodSeconds: 30
             failureThreshold: 3
+      volumes:
+        - name: redis-ca-cert
+          secret:
+            secretName: redis-ca-cert
+            items:
+              - key: latest
+                path: latest
   traffic:
     - percent: 100
       latestRevision: true

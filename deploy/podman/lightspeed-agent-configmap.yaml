@@ -10,12 +10,13 @@ metadata:
 data:
   # Google AI Configuration
   GOOGLE_GENAI_USE_VERTEXAI: "FALSE"
-  GOOGLE_CLOUD_LOCATION: "us-central1"
+  GOOGLE_CLOUD_LOCATION: "global"
   GEMINI_MODEL: "gemini-2.5-flash"
 
   # Red Hat SSO Configuration
   RED_HAT_SSO_ISSUER: "https://sso.redhat.com/auth/realms/redhat-external"
-  AGENT_REQUIRED_SCOPE: "agent:insights"
+  AGENT_REQUIRED_SCOPE: "api.console,api.ocm"
+  AGENT_ALLOWED_SCOPES: "openid,profile,email,api.console,api.ocm"
 
   # MCP Server Configuration (for agent)
   MCP_TRANSPORT_MODE: "http"
@@ -30,10 +31,19 @@ data:
 
   # Agent Configuration
   AGENT_PROVIDER_URL: "http://localhost:8000"
+  # Agent provider's organization website URL.
+  # Used in AgentCard provider.url and as the expected JWT audience
+  # for Google DCR software_statement validation.
+  AGENT_PROVIDER_ORGANIZATION_URL: "https://www.redhat.com"
   AGENT_NAME: "lightspeed_agent"
   AGENT_DESCRIPTION: "Red Hat Lightspeed Agent for Google Cloud"
   AGENT_HOST: "0.0.0.0"
   AGENT_PORT: "8000"
+
+  # Session Configuration
+  # Session backend: "memory" for dev (no persistence), "database" for persistent sessions
+  # To use "database", ensure SESSION_DATABASE_URL is configured in the secret
+  SESSION_BACKEND: "memory"
 
   # Database Configuration
   # DATABASE_URL and passwords are stored in secrets (contain credentials)
@@ -63,14 +73,17 @@ data:
   # Set SERVICE_CONTROL_SERVICE_NAME in secrets for production
   SERVICE_CONTROL_ENABLED: "false"
 
-  # Logging
+  # Logging and Audit Trail
+  # LOG_LEVEL: DEBUG, INFO, WARNING, ERROR
+  # LOG_FORMAT: "json" (structured with audit fields: user_id, org_id,
+  #   order_id, request_id) or "text" (human-readable, no audit fields)
+  # AGENT_LOGGING_DETAIL: "basic" (tool names and lifecycle events only)
+  #   or "detailed" (also includes tool arguments and truncated results)
   LOG_LEVEL: "DEBUG"
   LOG_FORMAT: "json"
+  AGENT_LOGGING_DETAIL: "detailed"
 
   # DCR (Dynamic Client Registration) Configuration
-  # Set to "true" to enable real DCR with Red Hat SSO (Keycloak)
-  # When "false", accepts static credentials (client_id/client_secret) from the DCR request body
-  DCR_ENABLED: "true"
   DCR_CLIENT_NAME_PREFIX: "gemini-order-"
 
   # Development Settings

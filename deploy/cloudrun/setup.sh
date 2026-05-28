@@ -129,6 +129,7 @@ log_info "Granting IAM roles to service account..."
 # - logging.logWriter: Write logs to Cloud Logging
 # - monitoring.metricWriter: Write metrics to Cloud Monitoring
 # - cloudsql.client: Connect to Cloud SQL instances
+# - serviceusage.serviceUsageConsumer: Bill API calls (Procurement API) to this project
 #
 # Note: roles/run.invoker is NOT granted here. It is granted to the
 # separate Pub/Sub Invoker SA on the marketplace-handler service
@@ -142,6 +143,7 @@ roles=(
     "roles/logging.logWriter"
     "roles/monitoring.metricWriter"
     "roles/cloudsql.client"
+    "roles/serviceusage.serviceUsageConsumer"
 )
 
 for role in "${roles[@]}"; do
@@ -164,9 +166,9 @@ secrets=(
 )
 
 # DCR (Dynamic Client Registration) secrets
-# Required when DCR_ENABLED=true (default)
 dcr_secrets=(
-    "dcr-initial-access-token"  # Keycloak IAT for creating OAuth clients
+    "gma-client-id"             # GMA SSO API client ID for tenant creation
+    "gma-client-secret"         # GMA SSO API client secret
     "dcr-encryption-key"        # Fernet key for encrypting client secrets
 )
 
@@ -178,7 +180,8 @@ db_secrets=(
 
 # Rate limiting (Redis - REQUIRED for agent)
 redis_secrets=(
-    "rate-limit-redis-url"      # redis://REDIS_IP:6379/0 (Cloud Memorystore instance)
+    "rate-limit-redis-url"      # rediss://REDIS_IP:6379/0 (Cloud Memorystore instance, TLS)
+    "redis-ca-cert"             # Cloud Memorystore server CA certificate (PEM)
 )
 
 # Combine all optional secrets
@@ -263,12 +266,28 @@ if [[ "$ENABLE_MARKETPLACE" == "true" ]]; then
         --project="$PROJECT_ID" \
         --quiet || true
 
+    # Grant the Pub/Sub Invoker SA the Pub/Sub Editor role in the project.
+    # Required so that deploy.sh can impersonate this SA to create a push
+    # subscription attached to the marketplace topic (which is typically in a
+    # different GCP project, e.g. Google's cloudcommerceproc-prod).
+    log_info "Granting roles/pubsub.editor to Pub/Sub Invoker SA..."
+    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+        --member="serviceAccount:$PUBSUB_INVOKER_SA" \
+        --role="roles/pubsub.editor" \
+        --quiet || true
+
     # -------------------------------------------------------------------------
     # Create Pub/Sub Topic
     # -------------------------------------------------------------------------
     PUBSUB_TOPIC="${PUBSUB_TOPIC:-marketplace-entitlements}"
 
-    if ! gcloud pubsub topics describe "$PUBSUB_TOPIC" --project="$PROJECT_ID" &>/dev/null; then
+    # If PUBSUB_TOPIC is a fully-qualified path (projects/.../topics/...),
+    # the topic lives in another GCP project (e.g. Google Cloud Marketplace).
+    # Skip creation — the topic is managed externally.
+    if [[ "$PUBSUB_TOPIC" == projects/* ]]; then
+        log_info "Pub/Sub topic is a cross-project reference: $PUBSUB_TOPIC"
+        log_info "Skipping topic creation (managed externally)"
+    elif ! gcloud pubsub topics describe "$PUBSUB_TOPIC" --project="$PROJECT_ID" &>/dev/null; then
         gcloud pubsub topics create "$PUBSUB_TOPIC" --project="$PROJECT_ID"
         log_info "Pub/Sub topic '$PUBSUB_TOPIC' created"
     else
@@ -321,8 +340,9 @@ echo "   # Red Hat SSO credentials (for user authentication)"
 echo "   echo -n 'YOUR_SSO_CLIENT_ID' | gcloud secrets versions add redhat-sso-client-id --data-file=- --project=$PROJECT_ID"
 echo "   echo -n 'YOUR_SSO_CLIENT_SECRET' | gcloud secrets versions add redhat-sso-client-secret --data-file=- --project=$PROJECT_ID"
 echo ""
-echo "   # DCR (Dynamic Client Registration) credentials"
-echo "   echo -n 'YOUR_INITIAL_ACCESS_TOKEN' | gcloud secrets versions add dcr-initial-access-token --data-file=- --project=$PROJECT_ID"
+echo "   # DCR (Dynamic Client Registration) credentials — GMA SSO API"
+echo "   echo -n 'YOUR_GMA_CLIENT_ID' | gcloud secrets versions add gma-client-id --data-file=- --project=$PROJECT_ID"
+echo "   echo -n 'YOUR_GMA_CLIENT_SECRET' | gcloud secrets versions add gma-client-secret --data-file=- --project=$PROJECT_ID"
 echo "   # Generate Fernet key: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
 echo "   echo -n 'YOUR_FERNET_KEY' | gcloud secrets versions add dcr-encryption-key --data-file=- --project=$PROJECT_ID"
 echo ""
@@ -331,8 +351,11 @@ echo "   CONNECTION_NAME=\$(gcloud sql instances describe $DB_INSTANCE_NAME --pr
 echo "   echo -n \"postgresql+asyncpg://insights:\$MARKETPLACE_DB_PASSWORD@/lightspeed_agent?host=/cloudsql/\$CONNECTION_NAME\" | gcloud secrets versions add database-url --data-file=- --project=$PROJECT_ID"
 echo "   echo -n \"postgresql+asyncpg://sessions:\$SESSION_DB_PASSWORD@/agent_sessions?host=/cloudsql/\$CONNECTION_NAME\" | gcloud secrets versions add session-database-url --data-file=- --project=$PROJECT_ID"
 echo ""
-echo "   # Rate limit Redis URL (after Cloud Memorystore setup - see deploy/cloudrun/README.md)"
-echo "   echo -n 'redis://REDIS_IP:6379/0' | gcloud secrets versions add rate-limit-redis-url --data-file=- --project=$PROJECT_ID"
+echo "   # Rate limit Redis URL and CA cert (after Cloud Memorystore setup - see deploy/cloudrun/README.md)"
+echo "   # Note: TLS-enabled instances use port 6378, not 6379. Read the port from: gcloud redis instances describe INSTANCE --format='value(port)'"
+echo "   echo -n 'rediss://REDIS_IP:6378/0' | gcloud secrets versions add rate-limit-redis-url --data-file=- --project=$PROJECT_ID"
+echo "   # Download and store the Redis server CA certificate for TLS verification:"
+echo "   gcloud redis instances describe lightspeed-redis --region=\$REGION --project=$PROJECT_ID --format='value(serverCaCerts[0].cert)' | gcloud secrets versions add redis-ca-cert --data-file=- --project=$PROJECT_ID"
 echo ""
 echo "3. Copy the MCP server image to GCR (Cloud Run doesn't support Quay.io):"
 echo "   docker pull quay.io/redhat-services-prod/insights-management-tenant/insights-mcp/red-hat-lightspeed-mcp:latest"

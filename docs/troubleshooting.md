@@ -6,9 +6,11 @@ This guide helps diagnose and resolve common issues with the Lightspeed Agent.
 
 ### Health Check
 
+Health and readiness probes are served on a separate probe port (agent: 8002, handler: 8003).
+
 ```bash
-# Check if agent is running
-curl http://localhost:8000/health
+# Check if agent is running (probe port)
+curl http://localhost:8002/health
 
 # Expected response
 {"status": "healthy", "agent": "lightspeed_agent"}
@@ -17,8 +19,8 @@ curl http://localhost:8000/health
 ### Readiness Check
 
 ```bash
-# Check if agent is ready to accept requests
-curl http://localhost:8000/ready
+# Check if agent is ready to accept requests (probe port)
+curl http://localhost:8002/ready
 
 # Expected response
 {"status": "ready", "agent": "lightspeed_agent"}
@@ -55,7 +57,7 @@ python -c "from lightspeed_agent.config import get_settings; print(get_settings(
 | Error | Cause | Solution |
 |-------|-------|----------|
 | `ValidationError: google_api_key` | Missing API key | Set `GOOGLE_API_KEY` |
-| `ValidationError: lightspeed_client_id` | Missing MCP credentials | Set `LIGHTSPEED_CLIENT_ID` |
+| `MCP connection failed` | MCP server not reachable | Check `MCP_SERVER_URL` and MCP server status |
 | `Connection refused` | Database not running | Start PostgreSQL |
 
 ### Port Already in Use
@@ -103,7 +105,7 @@ echo $TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq .
 | Issue | Cause | Solution |
 |-------|-------|----------|
 | Token not active | Token expired or revoked | Get new token via OAuth or `client_credentials` |
-| Introspection failed | Agent can't reach Keycloak | Check `RED_HAT_SSO_ISSUER` and network |
+| Introspection failed | Agent can't reach Red Hat SSO | Check `RED_HAT_SSO_ISSUER` and network |
 | Wrong credentials | Agent client_id/secret invalid | Check `RED_HAT_SSO_CLIENT_ID/SECRET` |
 
 **Test Introspection Endpoint**:
@@ -127,9 +129,17 @@ curl -s -X POST \
 echo $TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq .scope
 ```
 
-**Required Scope**: `agent:insights` (configurable via `AGENT_REQUIRED_SCOPE`)
+**Required Scopes**: `api.console` and `api.ocm` (configurable via `AGENT_REQUIRED_SCOPE`)
 
-**Fix**: Ensure the `agent:insights` Client Scope exists in Keycloak and is assigned to the client that issued the token.
+**Fix**: Ensure the `api.console` and `api.ocm` Client Scopes exist in Red Hat SSO and are assigned to the client that issued the token.
+
+### Disallowed Scope (403 Forbidden)
+
+**Symptom**: `Token carries disallowed scope(s): <scope_name>`
+
+The token contains scopes outside the `AGENT_ALLOWED_SCOPES` allowlist.
+
+**Fix**: Either add the scope to `AGENT_ALLOWED_SCOPES` or request a token without the extra scopes. All permitted scopes must be explicitly listed.
 
 ### OAuth Callback Errors
 
@@ -207,15 +217,15 @@ curl -X POST "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-fla
 # Test MCP server (if using HTTP transport)
 curl http://localhost:8080/health
 
-# Check MCP credentials
-echo $LIGHTSPEED_CLIENT_ID
+# Check MCP server URL
+echo $MCP_SERVER_URL
 ```
 
 **Common Causes**:
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
-| `Authentication failed` | Invalid credentials | Check LIGHTSPEED_* vars |
+| `Authentication failed` | Invalid or expired JWT token | Ensure the caller has a valid Bearer token |
 | `Connection refused` | MCP server not running | Start MCP server |
 | `Timeout` | Network/server issues | Increase timeout |
 
@@ -300,7 +310,7 @@ podman pod inspect lightspeed-agent-pod
 podman login registry.access.redhat.com
 
 # Pull image manually
-podman pull registry.access.redhat.com/ubi9/python-312-minimal:latest
+podman pull registry.access.redhat.com/ubi10/python-312-minimal:latest
 ```
 
 ### Volume Mount Issues
@@ -364,8 +374,8 @@ gcloud run revisions list --service=lightspeed-agent --region=us-central1
 **Diagnose**:
 
 ```bash
-# Time a request
-time curl http://localhost:8000/health
+# Time a health check request (probe port)
+time curl http://localhost:8002/health
 
 # Profile with detailed timing
 curl -w "@curl-format.txt" -o /dev/null -s http://localhost:8000/a2a
@@ -418,7 +428,7 @@ open http://localhost:8000/docs
 | Message | Meaning | Action |
 |---------|---------|--------|
 | `Token validation failed` | Invalid/inactive token | Check token and introspection endpoint |
-| `Insufficient scope` | Missing `agent:insights` | Add scope to client in Keycloak |
+| `Insufficient scope` | Missing `api.console` or `api.ocm` | Add scopes to client in Red Hat SSO |
 | `Tool execution failed` | MCP error | Check MCP server |
 | `Rate limit exceeded` | Too many requests | Wait or upgrade |
 | `Database connection failed` | DB unreachable | Check database |
@@ -447,7 +457,7 @@ Before reporting an issue, collect:
 
 4. **Request/Response** (redact tokens):
    ```bash
-   curl -v http://localhost:8000/health 2>&1
+   curl -v http://localhost:8002/health 2>&1
    ```
 
 ### Report Issues

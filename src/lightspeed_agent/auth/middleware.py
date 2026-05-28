@@ -2,14 +2,16 @@
 
 import contextvars
 import logging
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse
 
 from lightspeed_agent.auth.introspection import (
+    DisallowedScopeError,
     InsufficientScopeError,
     TokenValidationError,
     get_token_introspector,
@@ -27,6 +29,15 @@ _request_access_token: contextvars.ContextVar[tuple[str, datetime] | None] = (
 _request_order_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_request_order_id", default=None
 )
+_request_user_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_request_user_id", default=None
+)
+_request_org_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_request_org_id", default=None
+)
+_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_request_id", default=None
+)
 
 
 def get_request_access_token() -> tuple[str, datetime] | None:
@@ -37,6 +48,21 @@ def get_request_access_token() -> tuple[str, datetime] | None:
 def get_request_order_id() -> str | None:
     """Return the current request's order_id, or None."""
     return _request_order_id.get()
+
+
+def get_request_user_id() -> str | None:
+    """Return the current request's user_id, or None."""
+    return _request_user_id.get()
+
+
+def get_request_org_id() -> str | None:
+    """Return the current request's org_id, or None."""
+    return _request_org_id.get()
+
+
+def get_request_id() -> str | None:
+    """Return the current request's correlation ID, or None."""
+    return _request_id.get()
 
 
 class AuthenticationMiddleware(BaseHTTPMiddleware):
@@ -52,9 +78,6 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
 
     # Paths that are always public (no auth required)
     PUBLIC_PATHS = {
-        "/health",
-        "/healthz",
-        "/ready",
         "/docs",
         "/openapi.json",
         "/redoc",
@@ -75,11 +98,14 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self,
         request: Request,
-        call_next,
+        call_next: RequestResponseEndpoint,
     ) -> Response:
         """Process request with authentication check."""
         _request_access_token.set(None)
         _request_order_id.set(None)
+        _request_user_id.set(None)
+        _request_org_id.set(None)
+        _request_id.set(str(uuid.uuid4()))
         path = request.url.path
         method = request.method
 
@@ -122,7 +148,21 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             # Make token available to downstream services (MCP header provider)
             _request_access_token.set((token, user.token_exp))
             _request_order_id.set(order_id)
-            logger.debug("Authenticated user: %s", user.user_id)
+            _request_user_id.set(user.user_id)
+            _request_org_id.set(user.org_id)
+            logger.info(
+                "Authenticated request "
+                "(event_type=request_authenticated, user_id=%s, org_id=%s, "
+                "client_id=%s, order_id=%s, request_id=%s)",
+                user.user_id,
+                user.org_id,
+                user.client_id,
+                order_id,
+                _request_id.get(),
+            )
+        except DisallowedScopeError as e:
+            logger.warning("Disallowed scope: %s", e)
+            return self._forbidden_response(str(e))
         except InsufficientScopeError as e:
             logger.warning("Insufficient scope: %s", e)
             return self._forbidden_response(str(e))
@@ -146,12 +186,8 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
         if path == "/" and method == "GET":
             return True
 
-        # Only POST to protected paths requires auth
-        if path in self.PROTECTED_PATHS and method == "POST":
-            return False
-
-        # Everything else is public by default
-        return True
+        # Only POST to protected paths requires auth; everything else is public
+        return not (path in self.PROTECTED_PATHS and method == "POST")
 
     @staticmethod
     def _extract_token_for_passthrough(request: Request) -> None:
@@ -171,6 +207,8 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             order_id = request.headers.get("X-Order-Id")
             if order_id:
                 _request_order_id.set(order_id)
+            _request_user_id.set("dev-user")
+            _request_org_id.set("dev-org")
             logger.debug("Extracted Bearer token for pass-through (validation skipped)")
 
     async def _resolve_and_validate_order(self, *, client_id: str) -> str | None:

@@ -10,10 +10,11 @@
 # - Service accounts (runtime + Pub/Sub invoker) and IAM bindings
 #
 # Usage:
-#   ./deploy/cloudrun/cleanup.sh [--force]
+#   ./deploy/cloudrun/cleanup.sh [--force] [--purge-data]
 #
 # Options:
-#   --force    Skip confirmation prompt
+#   --force       Skip confirmation prompt
+#   --purge-data  Also delete CloudSQL instances (lists Redis for manual cleanup)
 #
 # Prerequisites:
 #   - gcloud CLI installed and authenticated
@@ -55,6 +56,7 @@ PUBSUB_SUBSCRIPTION="${PUBSUB_SUBSCRIPTION:-${PUBSUB_TOPIC}-sub}"
 
 # Parse arguments
 FORCE=false
+PURGE_DATA=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -62,9 +64,13 @@ while [[ $# -gt 0 ]]; do
             FORCE=true
             shift
             ;;
+        --purge-data)
+            PURGE_DATA=true
+            shift
+            ;;
         *)
             log_error "Unknown option: $1"
-            echo "Usage: $0 [--force]"
+            echo "Usage: $0 [--force] [--purge-data]"
             exit 1
             ;;
     esac
@@ -82,12 +88,17 @@ echo ""
 echo "  - Cloud Run services: $SERVICE_NAME, $HANDLER_SERVICE_NAME"
 echo "  - Pub/Sub topic: $PUBSUB_TOPIC"
 echo "  - Pub/Sub subscription: $PUBSUB_SUBSCRIPTION"
-echo "  - Secrets: lightspeed-client-id, lightspeed-client-secret,"
-echo "             redhat-sso-client-id, redhat-sso-client-secret, database-url,"
-echo "             session-database-url, dcr-initial-access-token, dcr-encryption-key,"
+echo "  - Secrets: redhat-sso-client-id, redhat-sso-client-secret, database-url,"
+echo "             session-database-url, gma-client-id, gma-client-secret, dcr-encryption-key,"
 echo "             rate-limit-redis-url"
 echo "  - Service accounts: $SERVICE_ACCOUNT"
 echo "                      $PUBSUB_INVOKER_SA"
+if [ "$PURGE_DATA" = true ]; then
+    echo ""
+    log_warn "DATA PURGE ENABLED — the following will also be PERMANENTLY deleted:"
+    echo "  - CloudSQL instances matching 'lightspeed' (IRREVERSIBLE DATA LOSS)"
+    echo "  - Redis instances will be listed for manual cleanup"
+fi
 echo ""
 
 # Confirmation prompt
@@ -145,8 +156,10 @@ else
     log_info "Pub/Sub subscription '$PUBSUB_SUBSCRIPTION' does not exist, skipping"
 fi
 
-# Delete topic
-if gcloud pubsub topics describe "$PUBSUB_TOPIC" --project="$PROJECT_ID" &>/dev/null; then
+# Delete topic (skip if cross-project — the topic is managed externally)
+if [[ "$PUBSUB_TOPIC" == projects/* ]]; then
+    log_info "Pub/Sub topic is a cross-project reference, skipping deletion: $PUBSUB_TOPIC"
+elif gcloud pubsub topics describe "$PUBSUB_TOPIC" --project="$PROJECT_ID" &>/dev/null; then
     gcloud pubsub topics delete "$PUBSUB_TOPIC" \
         --project="$PROJECT_ID" \
         --quiet
@@ -161,13 +174,12 @@ fi
 log_info "Deleting secrets from Secret Manager..."
 
 secrets=(
-    "lightspeed-client-id"
-    "lightspeed-client-secret"
     "redhat-sso-client-id"
     "redhat-sso-client-secret"
     "database-url"
     "session-database-url"
-    "dcr-initial-access-token"
+    "gma-client-id"
+    "gma-client-secret"
     "dcr-encryption-key"
     "rate-limit-redis-url"
 )
@@ -197,6 +209,7 @@ roles=(
     "roles/logging.logWriter"
     "roles/monitoring.metricWriter"
     "roles/cloudsql.client"
+    "roles/serviceusage.serviceUsageConsumer"
 )
 
 if gcloud iam service-accounts describe "$SERVICE_ACCOUNT" --project="$PROJECT_ID" &>/dev/null; then
@@ -238,6 +251,13 @@ if gcloud iam service-accounts describe "$PUBSUB_INVOKER_SA" --project="$PROJECT
         --project="$PROJECT_ID" \
         --quiet 2>/dev/null || true
 
+    # Remove the project-level pubsub.editor binding
+    log_info "  Removing roles/pubsub.editor..."
+    gcloud projects remove-iam-policy-binding "$PROJECT_ID" \
+        --member="serviceAccount:$PUBSUB_INVOKER_SA" \
+        --role="roles/pubsub.editor" \
+        --quiet 2>/dev/null || true
+
     log_info "Deleting Pub/Sub Invoker service account..."
     gcloud iam service-accounts delete "$PUBSUB_INVOKER_SA" \
         --project="$PROJECT_ID" \
@@ -245,6 +265,26 @@ if gcloud iam service-accounts describe "$PUBSUB_INVOKER_SA" --project="$PROJECT
     log_info "Service account '$PUBSUB_INVOKER_SA' deleted"
 else
     log_info "Service account '$PUBSUB_INVOKER_SA' does not exist, skipping"
+fi
+
+# =============================================================================
+# Step 5: Purge Data Resources (optional)
+# =============================================================================
+if [ "$PURGE_DATA" = true ]; then
+    echo ""
+    log_info "Purging data resources..."
+    # Delete CloudSQL instances
+    for instance in $(gcloud sql instances list --project="$PROJECT_ID" --filter="name~^lightspeed" --format="value(name)" 2>/dev/null); do
+        echo "Deleting CloudSQL instance: $instance"
+        if ! gcloud sql instances delete "$instance" --project="$PROJECT_ID" --quiet; then
+            log_warn "Failed to delete CloudSQL instance: $instance"
+        fi
+    done
+    # List Redis instances for manual cleanup
+    for instance in $(gcloud redis instances list --region="$REGION" --project="$PROJECT_ID" --format="value(name)" 2>/dev/null); do
+        echo "Note: Redis instance $instance must be deleted manually or via console"
+    done
+    log_info "Data purge complete."
 fi
 
 # =============================================================================
@@ -260,10 +300,16 @@ echo "  - Cloud Run services ($SERVICE_NAME, $HANDLER_SERVICE_NAME)"
 echo "  - Pub/Sub topic and subscription"
 echo "  - Secret Manager secrets"
 echo "  - Service accounts (runtime + Pub/Sub invoker) and IAM bindings"
+if [ "$PURGE_DATA" = true ]; then
+    echo "  - CloudSQL instances matching 'lightspeed'"
+fi
 echo ""
+
 echo "Note: The following resources were NOT deleted (delete manually if needed):"
-echo "  - Cloud SQL instances"
-echo "  - Cloud Memorystore Redis instances"
+if [ "$PURGE_DATA" != true ]; then
+    echo "  - Cloud SQL instances (use --purge-data to delete)"
+    echo "  - Cloud Memorystore Redis instances (use --purge-data to delete)"
+fi
 echo "  - Container images in GCR/Artifact Registry"
 echo "  - VPC connectors"
 echo "  - Cloud Build triggers"

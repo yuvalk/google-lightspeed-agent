@@ -1,10 +1,9 @@
 """Tests for A2A protocol implementation."""
 
-from unittest.mock import AsyncMock, patch
+import logging
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi.testclient import TestClient
-
 from a2a.types import (
     AgentCapabilities,
     AgentSkill,
@@ -14,7 +13,9 @@ from a2a.types import (
     TaskStatus,
     TextPart,
 )
+from fastapi.testclient import TestClient
 
+from lightspeed_agent.api.a2a.a2a_setup import _get_session_service, _normalize_db_url
 from lightspeed_agent.api.a2a.agent_card import build_agent_card, get_agent_card_dict
 from lightspeed_agent.api.app import create_app
 
@@ -53,13 +54,46 @@ class TestAgentCard:
         """Test AgentCard has DCR extension in capabilities."""
         card = build_agent_card()
 
-        # Extensions are now a list of AgentExtension objects
         assert card.capabilities.extensions is not None
-        assert len(card.capabilities.extensions) > 0
-        dcr_ext = card.capabilities.extensions[0]
-        assert "dcr" in dcr_ext.uri
+        dcr_exts = [ext for ext in card.capabilities.extensions if "dcr" in ext.uri]
+        assert len(dcr_exts) == 1
+        dcr_ext = dcr_exts[0]
         assert dcr_ext.params is not None
-        assert "endpoint" in dcr_ext.params
+        assert "target_url" in dcr_ext.params
+
+    def test_agent_card_has_access_mode_extension(self):
+        """Test AgentCard has access mode extension with read-only metadata."""
+        card = build_agent_card()
+
+        assert card.capabilities.extensions is not None
+        exts = [ext for ext in card.capabilities.extensions if "access-mode" in ext.uri]
+        assert len(exts) == 1
+        ext = exts[0]
+        assert ext.uri == "urn:redhat:lightspeed:access-mode"
+        assert ext.params is not None
+        assert ext.params["read_only"] is True
+        scopes = ext.params["oauth2_scopes"]
+        assert "api.console" in scopes
+        assert "api.ocm" in scopes
+
+    def test_agent_card_has_rate_limit_extension(self):
+        """Test AgentCard has rate limiting extension."""
+        card = build_agent_card()
+
+        assert card.capabilities.extensions is not None
+        exts = [ext for ext in card.capabilities.extensions if "rate-limiting" in ext.uri]
+        assert len(exts) == 1
+        ext = exts[0]
+        assert ext.uri == "urn:redhat:lightspeed:rate-limiting"
+        assert ext.params is not None
+        assert ext.params["requests_per_minute"] == 60
+        assert ext.params["requests_per_hour"] == 1000
+
+    def test_agent_card_description_has_disclaimer(self):
+        """Test AgentCard description includes accuracy disclaimer."""
+        card = build_agent_card()
+
+        assert "Always review AI-generated content prior to use" in card.description
 
     def test_agent_card_url_points_to_root(self):
         """Test AgentCard URL points to root endpoint."""
@@ -76,6 +110,23 @@ class TestAgentCard:
         skill_ids = [s.id for s in card.skills]
         assert "rhel-advisor" in skill_ids or len(skill_ids) > 0
 
+    def test_agent_card_provider_url_uses_organization_url(self):
+        """Test AgentCard provider.url reflects configurable organization URL."""
+        from lightspeed_agent.config import get_settings
+
+        settings = get_settings()
+        original = settings.agent_provider_organization_url
+        settings.agent_provider_organization_url = "https://custom-org.example.com"
+        build_agent_card.cache_clear()
+        get_agent_card_dict.cache_clear()
+        try:
+            card = build_agent_card()
+            assert card.provider.url == "https://custom-org.example.com"
+        finally:
+            settings.agent_provider_organization_url = original
+            build_agent_card.cache_clear()
+            get_agent_card_dict.cache_clear()
+
     def test_get_agent_card_dict(self):
         """Test AgentCard serialization to dict."""
         card_dict = get_agent_card_dict()
@@ -85,6 +136,95 @@ class TestAgentCard:
         assert "protocolVersion" in card_dict  # aliased field
         assert "securitySchemes" in card_dict  # aliased field
         assert "defaultInputModes" in card_dict  # aliased field
+        assert "iconUrl" not in card_dict  # injected dynamically at the endpoint level
+
+    def test_agent_card_all_fields(self):
+        """Validate structural correctness of every AgentCard field."""
+        import re
+
+        build_agent_card.cache_clear()
+        get_agent_card_dict.cache_clear()
+        try:
+            card = build_agent_card()
+        finally:
+            build_agent_card.cache_clear()
+            get_agent_card_dict.cache_clear()
+
+        semver = re.compile(r"^\d+\.\d+\.\d+$")
+
+        # Top-level identity fields
+        assert card.name
+        assert semver.match(card.version)
+        assert semver.match(card.protocol_version)
+        assert card.url.endswith("/")
+        assert card.description
+
+        # Provider
+        assert card.provider.organization
+        assert card.provider.url.startswith("https://")
+
+        # Default I/O modes — must be proper MIME types (type/subtype)
+        mime_re = re.compile(r"^[a-z]+/[a-z0-9.+-]+$")
+        for mode in card.default_input_modes:
+            assert mime_re.match(mode), f"Invalid MIME type: {mode}"
+        for mode in card.default_output_modes:
+            assert mime_re.match(mode), f"Invalid MIME type: {mode}"
+
+        # Capabilities
+        assert card.capabilities.streaming is True
+
+        # Extensions — DCR, access-mode, and rate-limiting must be present
+        extensions = card.capabilities.extensions
+        assert len(extensions) >= 3
+        ext_by_uri = {ext.uri: ext for ext in extensions}
+
+        # DCR extension
+        dcr_uris = [u for u in ext_by_uri if "dcr" in u.lower()]
+        assert len(dcr_uris) == 1
+        dcr = ext_by_uri[dcr_uris[0]]
+        assert dcr.params["target_url"].endswith("/dcr")
+
+        # Access mode extension
+        assert "urn:redhat:lightspeed:access-mode" in ext_by_uri
+        access = ext_by_uri["urn:redhat:lightspeed:access-mode"]
+        assert isinstance(access.params["read_only"], bool)
+        assert len(access.params["oauth2_scopes"]) > 0
+
+        # Rate limit extension
+        assert "urn:redhat:lightspeed:rate-limiting" in ext_by_uri
+        rl = ext_by_uri["urn:redhat:lightspeed:rate-limiting"]
+        assert rl.params["requests_per_minute"] > 0
+        assert rl.params["requests_per_hour"] > 0
+        assert rl.params["requests_per_hour"] > rl.params["requests_per_minute"]
+
+        # Skills — at least one, each fully populated
+        assert len(card.skills) >= 1
+        for skill in card.skills:
+            assert skill.id, "Skill missing id"
+            assert skill.name, f"Skill {skill.id} has no name"
+            assert skill.description, f"Skill {skill.id} has no description"
+            assert len(skill.tags) > 0, f"Skill {skill.id} has no tags"
+            assert len(skill.examples) > 0, f"Skill {skill.id} has no examples"
+
+        # Security scheme — must have an OAuth 2.0 scheme
+        assert len(card.security_schemes) >= 1
+        oauth_schemes = {
+            k: v for k, v in card.security_schemes.items() if v.root.type == "oauth2"
+        }
+        assert len(oauth_schemes) >= 1
+        scheme_name, scheme = next(iter(oauth_schemes.items()))
+        oauth = scheme.root
+        assert oauth.flows.authorization_code is not None
+        assert oauth.flows.authorization_code.authorization_url.startswith("https://")
+        assert oauth.flows.authorization_code.token_url.startswith("https://")
+        assert "openid" in oauth.flows.authorization_code.scopes
+        for desc in oauth.flows.authorization_code.scopes.values():
+            assert desc, "OAuth scope has empty description"
+
+        # Security requirements — scheme must be referenced
+        assert len(card.security) >= 1
+        referenced_schemes = {k for req in card.security for k in req}
+        assert scheme_name in referenced_schemes
 
 
 class TestModels:
@@ -150,7 +290,7 @@ class TestModels:
 
         ext = AgentExtension(
             uri="urn:test:dcr",
-            params={"endpoint": "http://example.com/register"},
+            params={"target_url": "http://example.com/register"},
         )
         caps = AgentCapabilities(
             streaming=True,
@@ -190,7 +330,7 @@ class TestA2AEndpoints:
         rl_mod._rate_limiter = None
 
     def test_agent_card_endpoint(self, client):
-        """Test /.well-known/agent.json endpoint."""
+        """Test /.well-known/agent.json endpoint returns card with dynamic iconUrl."""
         response = client.get("/.well-known/agent.json")
 
         assert response.status_code == 200
@@ -198,22 +338,21 @@ class TestA2AEndpoints:
         assert "name" in data
         assert "skills" in data
         assert "securitySchemes" in data
+        assert data["iconUrl"] == "http://testserver/static/logo.png"
 
-    def test_health_endpoint(self, client):
-        """Test /health endpoint."""
-        response = client.get("/health")
+    def test_agent_card_alias_matches(self, client):
+        """Test /.well-known/agent-card.json returns the same card as agent.json."""
+        main = client.get("/.well-known/agent.json").json()
+        alias = client.get("/.well-known/agent-card.json").json()
+
+        assert alias["iconUrl"] == main["iconUrl"]
+
+    def test_logo_endpoint(self, client):
+        """Test GET /static/logo.png serves an image/png response."""
+        response = client.get("/static/logo.png")
 
         assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "healthy"
-
-    def test_ready_endpoint(self, client):
-        """Test /ready endpoint."""
-        response = client.get("/ready")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "ready"
+        assert response.headers["content-type"] == "image/png"
 
     def test_send_message_jsonrpc(self, client):
         """Test / endpoint with JSON-RPC message/send."""
@@ -254,3 +393,201 @@ class TestA2AEndpoints:
         data = response.json()
         assert data["jsonrpc"] == "2.0"
         assert "error" in data
+
+
+class TestNormalizeDbUrl:
+    """Tests for _normalize_db_url() async driver normalization."""
+
+    @pytest.mark.parametrize(
+        "input_url,expected",
+        [
+            (
+                "postgres://user:pass@host:5432/db",
+                "postgresql+asyncpg://user:pass@host:5432/db",
+            ),
+            (
+                "postgresql://user:pass@host:5432/db",
+                "postgresql+asyncpg://user:pass@host:5432/db",
+            ),
+            (
+                "postgresql+psycopg://user:pass@host:5432/db",
+                "postgresql+asyncpg://user:pass@host:5432/db",
+            ),
+            (
+                "postgresql+psycopg2://user:pass@host:5432/db",
+                "postgresql+asyncpg://user:pass@host:5432/db",
+            ),
+            (
+                "postgresql+asyncpg://user:pass@host:5432/db",
+                "postgresql+asyncpg://user:pass@host:5432/db",
+            ),
+            (
+                "sqlite:///path/to/db.sqlite",
+                "sqlite:///path/to/db.sqlite",
+            ),
+        ],
+    )
+    def test_sync_schemes_converted(self, input_url, expected):
+        assert _normalize_db_url(input_url) == expected
+
+
+class TestGetSessionService:
+    """Tests for _get_session_service() session service factory."""
+
+    def test_cloudsql_host_logged_correctly(self, caplog):
+        """Test that Cloud SQL socket path is logged as host instead of empty string."""
+        cloudsql_url = (
+            "postgresql+asyncpg://sessions:secret_password@"
+            "/agent_sessions?host=/cloudsql/project:region:instance"
+        )
+        mock_settings = MagicMock()
+        mock_settings.session_backend = "database"
+        mock_settings.session_database_url = cloudsql_url
+
+        mock_db_session = MagicMock()
+
+        with (
+            patch(
+                "lightspeed_agent.api.a2a.a2a_setup.get_settings",
+                return_value=mock_settings,
+            ),
+            patch(
+                "lightspeed_agent.api.a2a.session_service.RetryingDatabaseSessionService",
+                mock_db_session,
+            ),
+            caplog.at_level(logging.INFO),
+        ):
+            _get_session_service()
+
+        # Should log the query parameter (Cloud SQL socket), not an empty host
+        assert "host=/cloudsql/project:region:instance" in caplog.text
+        assert "host=)" not in caplog.text
+
+    def test_standard_host_logged_correctly(self, caplog):
+        """Test that a standard PostgreSQL host is logged correctly."""
+        standard_url = "postgresql+asyncpg://user:pass@db.example.com:5432/mydb"
+        mock_settings = MagicMock()
+        mock_settings.session_backend = "database"
+        mock_settings.session_database_url = standard_url
+
+        mock_db_session = MagicMock()
+
+        with (
+            patch(
+                "lightspeed_agent.api.a2a.a2a_setup.get_settings",
+                return_value=mock_settings,
+            ),
+            patch(
+                "lightspeed_agent.api.a2a.session_service.RetryingDatabaseSessionService",
+                mock_db_session,
+            ),
+            caplog.at_level(logging.INFO),
+        ):
+            _get_session_service()
+
+        assert "host=db.example.com" in caplog.text
+
+    def test_credentials_not_leaked_on_init_failure(self):
+        """Test that database credentials are sanitized in error messages."""
+        db_url = (
+            "postgresql+asyncpg://sessions:8dnL1i3eo4GtqwUpKKhNVA@"
+            "/agent_sessions?host=/cloudsql/project:region:instance"
+        )
+        mock_settings = MagicMock()
+        mock_settings.session_backend = "database"
+        mock_settings.session_database_url = db_url
+
+        error_msg = (
+            "Failed to create database engine for URL "
+            "'postgresql+asyncpg://sessions:8dnL1i3eo4GtqwUpKKhNVA@"
+            "/agent_sessions?host=/cloudsql/project:region:instance'"
+        )
+
+        with (
+            pytest.raises(
+                RuntimeError,
+                match=r"Failed to initialize RetryingDatabaseSessionService",
+            ) as exc_info,
+            patch(
+                "lightspeed_agent.api.a2a.a2a_setup.get_settings",
+                return_value=mock_settings,
+            ),
+            patch(
+                "lightspeed_agent.api.a2a.session_service.RetryingDatabaseSessionService",
+                side_effect=RuntimeError(error_msg),
+            ),
+        ):
+            _get_session_service()
+
+        # Password must not appear in the raised error
+        assert "8dnL1i3eo4GtqwUpKKhNVA" not in str(exc_info.value)
+
+        # But the sanitized URL structure should still be present for debugging
+        assert "://***@" in str(exc_info.value)
+
+    def test_memory_backend_used_when_configured(self, caplog):
+        """Test that InMemorySessionService is used when SESSION_BACKEND=memory."""
+        mock_settings = MagicMock()
+        mock_settings.session_backend = "memory"
+
+        with (
+            patch(
+                "lightspeed_agent.api.a2a.a2a_setup.get_settings",
+                return_value=mock_settings,
+            ),
+            caplog.at_level(logging.INFO),
+        ):
+            service = _get_session_service()
+
+        from google.adk.sessions import InMemorySessionService
+
+        assert isinstance(service, InMemorySessionService)
+        assert "InMemorySessionService" in caplog.text
+
+    def test_memory_backend_ignores_database_url(self, caplog):
+        """Test that SESSION_BACKEND=memory ignores SESSION_DATABASE_URL."""
+        mock_settings = MagicMock()
+        mock_settings.session_backend = "memory"
+        mock_settings.session_database_url = (
+            "postgresql+asyncpg://user:pass@host:5432/sessions"
+        )
+
+        with (
+            patch(
+                "lightspeed_agent.api.a2a.a2a_setup.get_settings",
+                return_value=mock_settings,
+            ),
+            caplog.at_level(logging.INFO),
+        ):
+            service = _get_session_service()
+
+        from google.adk.sessions import InMemorySessionService
+
+        assert isinstance(service, InMemorySessionService)
+        assert "InMemorySessionService" in caplog.text
+
+    def test_database_backend_returns_database_service(self):
+        """Test that SESSION_BACKEND=database returns RetryingDatabaseSessionService."""
+        mock_settings = MagicMock()
+        mock_settings.session_backend = "database"
+        mock_settings.session_database_url = (
+            "postgresql+asyncpg://user:pass@host:5432/sessions"
+        )
+
+        mock_db_session = MagicMock()
+
+        with (
+            patch(
+                "lightspeed_agent.api.a2a.a2a_setup.get_settings",
+                return_value=mock_settings,
+            ),
+            patch(
+                "lightspeed_agent.api.a2a.session_service.RetryingDatabaseSessionService",
+                mock_db_session,
+            ),
+        ):
+            _get_session_service()
+
+        mock_db_session.assert_called_once_with(
+            db_url="postgresql+asyncpg://user:pass@host:5432/sessions"
+        )

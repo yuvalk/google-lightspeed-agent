@@ -33,7 +33,7 @@
 #   │  - POST /dcr            │     │  - POST / (A2A)         │
 #   │  - Pub/Sub push         │     │  - /.well-known/agent   │
 #   │  - Account approval     │     │  - OAuth flow           │
-#   │  - Keycloak DCR         │     │  - MCP sidecar          │
+#   │  - GMA SSO API          │     │  - MCP sidecar          │
 #   └─────────────────────────┘     └─────────────────────────┘
 #
 # Prerequisites:
@@ -60,6 +60,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-}"
 REGION="${GOOGLE_CLOUD_LOCATION:-us-central1}"
+VERTEXAI_LOCATION="${VERTEXAI_LOCATION:-global}"
 SERVICE_NAME="${SERVICE_NAME:-lightspeed-agent}"
 SERVICE_ACCOUNT_NAME="${SERVICE_ACCOUNT_NAME:-${SERVICE_NAME}}"
 HANDLER_SERVICE_NAME="${HANDLER_SERVICE_NAME:-marketplace-handler}"
@@ -71,9 +72,20 @@ IMAGE_TAG="${IMAGE_TAG:-latest}"
 PUBSUB_INVOKER_NAME="${PUBSUB_INVOKER_NAME:-pubsub-invoker}"
 PUBSUB_INVOKER_SA="${PUBSUB_INVOKER_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 
-# Marketplace Pub/Sub configuration
+# Marketplace configuration
 ENABLE_MARKETPLACE="${ENABLE_MARKETPLACE:-true}"
+SERVICE_CONTROL_SERVICE_NAME="${SERVICE_CONTROL_SERVICE_NAME:-}"
 PUBSUB_TOPIC="${PUBSUB_TOPIC:-marketplace-entitlements}"
+
+# When PUBSUB_TOPIC is a fully-qualified path (projects/.../topics/...),
+# the default derivation "${PUBSUB_TOPIC}-sub" produces an invalid
+# subscription name.  Require PUBSUB_SUBSCRIPTION to be set explicitly.
+if [[ "$PUBSUB_TOPIC" == projects/* && -z "${PUBSUB_SUBSCRIPTION:-}" ]]; then
+    log_error "PUBSUB_TOPIC is a fully-qualified path but PUBSUB_SUBSCRIPTION is not set."
+    log_error "Set PUBSUB_SUBSCRIPTION to a valid subscription name, e.g.:"
+    log_error "  export PUBSUB_SUBSCRIPTION=\"marketplace-events-sub\""
+    exit 1
+fi
 PUBSUB_SUBSCRIPTION="${PUBSUB_SUBSCRIPTION:-${PUBSUB_TOPIC}-sub}"
 
 # Default images
@@ -187,6 +199,7 @@ deploy_agent() {
         -e "s|\${MCP_IMAGE}|${MCP_IMAGE}|g" \
         -e "s|\${PROJECT_ID}|${PROJECT_ID}|g" \
         -e "s|\${REGION}|${REGION}|g" \
+        -e "s|\${VERTEXAI_LOCATION}|${VERTEXAI_LOCATION}|g" \
         -e "s|\${SERVICE_NAME}|${SERVICE_NAME}|g" \
         -e "s|\${SERVICE_ACCOUNT_NAME}|${SERVICE_ACCOUNT_NAME}|g" \
         -e "s|\${DB_INSTANCE_NAME}|${DB_INSTANCE_NAME}|g" \
@@ -228,6 +241,8 @@ deploy_handler() {
         -e "s|\${SERVICE_ACCOUNT_NAME}|${SERVICE_ACCOUNT_NAME}|g" \
         -e "s|\${HANDLER_SERVICE_NAME}|${HANDLER_SERVICE_NAME}|g" \
         -e "s|\${DB_INSTANCE_NAME}|${DB_INSTANCE_NAME}|g" \
+        -e "s|\${SERVICE_CONTROL_SERVICE_NAME}|${SERVICE_CONTROL_SERVICE_NAME}|g" \
+        -e "s|\${VPC_CONNECTOR_NAME}|${VPC_CONNECTOR_NAME}|g" \
         deploy/cloudrun/marketplace-handler.yaml > "$tmp_yaml"
 
     # Deploy using the YAML
@@ -285,6 +300,16 @@ configure_pubsub_push() {
         --role="roles/run.invoker" \
         --quiet || true
 
+    # For cross-project topics (fully-qualified path), the Pub/Sub Invoker SA
+    # is the account linked in the Google Cloud Marketplace Producer Portal and
+    # has permission to subscribe to the external topic.  We must impersonate it
+    # because the caller's personal account does not have that permission.
+    local impersonate_flag=""
+    if [[ "$PUBSUB_TOPIC" == projects/* ]]; then
+        impersonate_flag="--impersonate-service-account=$PUBSUB_INVOKER_SA"
+        log_info "Using service account impersonation for cross-project topic"
+    fi
+
     # Create or update the push subscription
     if gcloud pubsub subscriptions describe "$PUBSUB_SUBSCRIPTION" --project="$PROJECT_ID" &>/dev/null; then
         log_info "Updating existing subscription '$PUBSUB_SUBSCRIPTION' with push endpoint..."
@@ -296,12 +321,14 @@ configure_pubsub_push() {
             --quiet
     else
         log_info "Creating push subscription '$PUBSUB_SUBSCRIPTION'..."
+        # shellcheck disable=SC2086
         gcloud pubsub subscriptions create "$PUBSUB_SUBSCRIPTION" \
             --topic="$PUBSUB_TOPIC" \
             --push-endpoint="$push_endpoint" \
             --push-auth-service-account="$PUBSUB_INVOKER_SA" \
             --ack-deadline=60 \
-            --project="$PROJECT_ID"
+            --project="$PROJECT_ID" \
+            $impersonate_flag
     fi
 
     log_info "Pub/Sub push subscription configured:"
@@ -384,7 +411,11 @@ case "$DEPLOY_SERVICE" in
         echo ""
         show_service_info "$SERVICE_NAME"
 
-        # Update AGENT_PROVIDER_URL and MARKETPLACE_HANDLER_URL
+        # Update AGENT_PROVIDER_URL (agent base URL) and MARKETPLACE_HANDLER_URL
+        # on the agent service so the AgentCard advertises the correct URLs.
+        # Note: AGENT_PROVIDER_ORGANIZATION_URL (JWT audience for DCR) is set
+        # in service.yaml and does NOT change per deployment — it's the
+        # provider's website (e.g., https://www.redhat.com).
         service_url=$(gcloud run services describe "$SERVICE_NAME" \
             --region="$REGION" \
             --project="$PROJECT_ID" \
@@ -432,7 +463,9 @@ case "$DEPLOY_SERVICE" in
         echo ""
         show_service_info "$SERVICE_NAME"
 
-        # Update AGENT_PROVIDER_URL and MARKETPLACE_HANDLER_URL
+        # Update AGENT_PROVIDER_URL (agent base URL) and MARKETPLACE_HANDLER_URL
+        # on the agent service. AGENT_PROVIDER_ORGANIZATION_URL is set in
+        # service.yaml and does NOT change per deployment.
         service_url=$(gcloud run services describe "$SERVICE_NAME" \
             --region="$REGION" \
             --project="$PROJECT_ID" \
