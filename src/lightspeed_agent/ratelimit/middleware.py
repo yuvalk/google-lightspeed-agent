@@ -221,6 +221,9 @@ def get_redis_rate_limiter() -> RedisRateLimiter:
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Middleware for global Redis-backed rate limiting."""
 
+    # Counter for fail-open events (Redis unavailable)
+    _fail_open_count: int = 0
+
     # Default paths to skip rate limiting
     DEFAULT_SKIP_PATHS: set[str] = {
         "/docs",
@@ -274,9 +277,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             # Fail open: allow the request through when Redis is unavailable.
             # Blocking all traffic on a rate-limiter outage would be a
             # self-inflicted denial of service.
+            RateLimitMiddleware._fail_open_count += 1
             logger.warning(
                 "Rate limiter backend unavailable, allowing request (fail-open). "
-                "principals=%s",
+                "fail_open_count=%d principals=%s",
+                RateLimitMiddleware._fail_open_count,
                 principals,
             )
             response = await call_next(request)

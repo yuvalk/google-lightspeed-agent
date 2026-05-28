@@ -93,6 +93,7 @@ async def _handle_dcr_request(body: dict[str, Any]) -> JSONResponse:
                 "error": result.error.value,
                 "error_description": result.error_description,
             },
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache", "Expires": "0"},
         )
 
     logger.info("DCR successful: client_id=%s", result.client_id)
@@ -103,6 +104,7 @@ async def _handle_dcr_request(body: dict[str, Any]) -> JSONResponse:
             "client_secret": result.client_secret,
             "client_secret_expires_at": result.client_secret_expires_at,
         },
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache", "Expires": "0"},
     )
 
 
@@ -181,7 +183,10 @@ async def _handle_pubsub_event(body: dict[str, Any]) -> JSONResponse:
         logger.exception("Failed to process marketplace event %s: %s", message_id, e)
         return JSONResponse(
             status_code=500,
-            content={"error": "event_processing_failed", "message": str(e)},
+            content={
+                "error": "event_processing_failed",
+                "message": "Internal error processing event",
+            },
         )
 
     order_id = event.entitlement.id if event.entitlement else None

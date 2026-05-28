@@ -22,6 +22,8 @@ spec:
         - "run-redis"
         - "--appendonly"
         - "yes"
+        - "--requirepass"
+        - "changeme-dev-redis"
       ports:
         - containerPort: 6379
           hostPort: 6379

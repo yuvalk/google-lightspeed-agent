@@ -314,7 +314,7 @@ class Settings(BaseSettings):
 
     # Agent allowed scopes (comma-separated allowlist)
     agent_allowed_scopes: str = Field(
-        default="openid,profile,email,api.console,api.ocm",
+        default="openid,profile,email,api.console,api.ocm,metering:admin",
         description=(
             "Comma-separated allowlist of OAuth scopes permitted in access tokens."
             " Tokens carrying scopes outside this list are rejected (HTTP 403)."

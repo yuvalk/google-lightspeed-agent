@@ -16,7 +16,7 @@ data:
   # Red Hat SSO Configuration
   RED_HAT_SSO_ISSUER: "https://sso.redhat.com/auth/realms/redhat-external"
   AGENT_REQUIRED_SCOPE: "api.console,api.ocm"
-  AGENT_ALLOWED_SCOPES: "openid,profile,email,api.console,api.ocm"
+  AGENT_ALLOWED_SCOPES: "openid,profile,email,api.console,api.ocm,metering:admin"
 
   # MCP Server Configuration (for agent)
   MCP_TRANSPORT_MODE: "http"
@@ -60,7 +60,8 @@ data:
 
   # Rate Limiting Configuration (Redis-backed)
   # Use host.containers.internal when running Redis on the host.
-  RATE_LIMIT_REDIS_URL: "redis://host.containers.internal:6379/0"
+  # NOTE: Use rediss:// (TLS) in production. This dev URL uses plain redis:// with password.
+  RATE_LIMIT_REDIS_URL: "redis://:changeme-dev-redis@host.containers.internal:6379/0"
   RATE_LIMIT_REDIS_TIMEOUT_MS: "200"
   RATE_LIMIT_KEY_PREFIX: "lightspeed:ratelimit"
   RATE_LIMIT_REQUESTS_PER_MINUTE: "60"
