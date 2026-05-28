@@ -153,6 +153,16 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Google Cloud Pub/Sub OIDC verification
+    pubsub_audience: str = Field(
+        default="",
+        description=(
+            "Expected audience claim in Google Cloud Pub/Sub OIDC tokens. "
+            "Set to your push subscription's audience value "
+            "(typically the service URL, e.g., https://marketplace-handler-xxx.run.app)."
+        ),
+    )
+
     # Google Cloud Service Control
     service_control_service_name: str = Field(
         default="",
@@ -400,6 +410,19 @@ class Settings(BaseSettings):
             logging.getLogger(__name__).warning(
                 "AUDIT_LOGGING_ENABLED=false: PII fields will not be injected into "
                 "log records. Forensic traceability is reduced."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _warn_missing_pubsub_audience_in_production(self) -> "Settings":
+        """Warn when PUBSUB_AUDIENCE is empty in a Cloud Run deployment."""
+        if not self.pubsub_audience and os.getenv("K_SERVICE"):
+            logging.getLogger(__name__).warning(
+                "PUBSUB_AUDIENCE is not set in Cloud Run (K_SERVICE=%s). "
+                "Pub/Sub OIDC tokens will be verified for signature and expiry "
+                "but NOT for audience. Set PUBSUB_AUDIENCE to your service URL "
+                "for stricter token binding.",
+                os.getenv("K_SERVICE"),
             )
         return self
 

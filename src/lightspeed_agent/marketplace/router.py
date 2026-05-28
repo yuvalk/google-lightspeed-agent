@@ -1,13 +1,14 @@
 """Marketplace Handler Router.
 
-Implements a hybrid /dcr endpoint that handles both:
-1. Direct DCR requests from Gemini Enterprise (contains software_statement)
-2. Pub/Sub events from Google Cloud Marketplace (contains message structure)
+Implements separate endpoints for:
+1. /dcr — Direct DCR requests from Gemini Enterprise (contains software_statement)
+2. /pubsub — Pub/Sub events from Google Cloud Marketplace, verified via Google OIDC
 
-This pattern follows the reference implementation where a single endpoint
-intelligently routes based on request content.
+Pub/Sub push messages are authenticated by verifying the Google-signed OIDC token
+in the Authorization header before processing any event.
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -15,6 +16,9 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+from google.auth import exceptions as google_auth_exceptions
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 
 from lightspeed_agent.config import get_settings
 from lightspeed_agent.dcr import DCRError, DCRRequest, get_dcr_service
@@ -23,48 +27,85 @@ from lightspeed_agent.marketplace.service import get_procurement_service
 
 logger = logging.getLogger(__name__)
 
+_google_auth_request = google_requests.Request()
+
 router = APIRouter(tags=["Marketplace Handler"])
 
 
 @router.post("/dcr")
-async def hybrid_dcr_handler(request: Request) -> JSONResponse:
-    """Hybrid handler for DCR and Pub/Sub events.
+async def dcr_handler(request: Request) -> JSONResponse:
+    """Handle DCR (Dynamic Client Registration) requests from Gemini Enterprise.
 
-    This endpoint handles two types of requests:
-
-    1. **Direct DCR Request** (from Gemini Enterprise):
-       - Contains `software_statement` in the body
-       - Validates JWT, creates OAuth client, returns credentials
-       - Synchronous flow
-
-    2. **Pub/Sub Event** (from Google Cloud Marketplace):
-       - Contains `message` with base64-encoded data
-       - Filters events by product (SERVICE_CONTROL_SERVICE_NAME)
-       - Processes account and entitlement events
-       - Asynchronous flow
+    Accepts requests containing a `software_statement` JWT. Pub/Sub messages
+    must be sent to the /pubsub endpoint instead.
 
     Returns:
-        DCR credentials or acknowledgment.
+        DCR credentials or error.
     """
     try:
         body = await request.json()
     except Exception as e:
         raise HTTPException(status_code=400, detail="Invalid JSON body") from e
 
-    # Route based on request content
-    if "software_statement" in body:
-        # Path A: Direct DCR request from Gemini Enterprise
-        return await _handle_dcr_request(body)
-    elif "message" in body:
-        # Path B: Pub/Sub event from Marketplace
-        return await _handle_pubsub_event(body)
-    else:
-        # Unknown request format
-        logger.warning("Unknown request format: %s", list(body.keys()))
+    if "software_statement" not in body:
         raise HTTPException(
             status_code=400,
-            detail="Request must contain either 'software_statement' (DCR) or 'message' (Pub/Sub)",
+            detail="Request must contain 'software_statement'. "
+            "Pub/Sub events should be sent to /pubsub.",
         )
+
+    return await _handle_dcr_request(body)
+
+
+@router.post("/pubsub")
+async def pubsub_handler(request: Request) -> JSONResponse:
+    """Handle Pub/Sub events from Google Cloud Marketplace.
+
+    Verifies the Google-signed OIDC token in the Authorization header
+    before processing any event. Rejects unauthenticated requests.
+
+    Returns:
+        Acknowledgment or error.
+    """
+    # Verify Google OIDC token
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid Authorization header. "
+            "Pub/Sub push subscriptions must be configured with OIDC authentication.",
+        )
+
+    token = auth_header[7:]
+    settings = get_settings()
+
+    try:
+        audience = settings.pubsub_audience or None
+        await asyncio.to_thread(
+            google_id_token.verify_oauth2_token,  # type: ignore[no-untyped-call]
+            token,
+            _google_auth_request,
+            audience=audience,
+        )
+    except (ValueError, google_auth_exceptions.GoogleAuthError) as e:
+        logger.warning("Pub/Sub OIDC token verification failed: %s", e)
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid Pub/Sub OIDC token",
+        ) from e
+
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from e
+
+    if "message" not in body:
+        raise HTTPException(
+            status_code=400,
+            detail="Request must contain 'message' with Pub/Sub payload.",
+        )
+
+    return await _handle_pubsub_event(body)
 
 
 async def _handle_dcr_request(body: dict[str, Any]) -> JSONResponse:

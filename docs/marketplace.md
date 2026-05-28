@@ -30,9 +30,8 @@ The system uses a **two-service architecture** to handle marketplace integration
 │                    Marketplace Handler (Port 8001)                          │
 │                    ─────────────────────────────────                        │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                    Hybrid /dcr Endpoint                             │    │
-│  │  - Pub/Sub Events → Approve accounts and entitlements               │    │
-│  │  - DCR Requests → Validate order, create OAuth clients via GMA API  │    │
+│  │  - POST /dcr → Validate order, create OAuth clients via GMA API       │    │
+│  │  - POST /pubsub → Pub/Sub Events (Google OIDC verified)               │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                              │                                              │
 │                              ▼                                              │
@@ -74,12 +73,12 @@ The system uses a **two-service architecture** to handle marketplace integration
 
 ## Dynamic Client Registration (DCR)
 
-DCR allows Marketplace customers to automatically register as OAuth clients. The Marketplace Handler exposes a single `/dcr` endpoint that handles both procurement events and DCR requests:
+DCR allows Marketplace customers to automatically register as OAuth clients. The Marketplace Handler exposes two separate endpoints:
 
-| Request Type | Content | Handler Action |
-|-------------|---------|----------------|
-| Pub/Sub Event | `{"message": {"data": "..."}}` | Approve account and entitlement |
-| DCR Request | `{"software_statement": "..."}` | Create OAuth client |
+| Endpoint | Content | Handler Action |
+|----------|---------|----------------|
+| `POST /pubsub` | Pub/Sub event (Google OIDC authenticated) | Approve account and entitlement |
+| `POST /dcr` | `{"software_statement": "..."}` | Create OAuth client |
 
 ### AgentCard DCR Extension
 
@@ -287,7 +286,7 @@ gcloud pubsub topics create marketplace-entitlements
 # Create push subscription to your service
 gcloud pubsub subscriptions create marketplace-entitlements-sub \
   --topic=marketplace-entitlements \
-  --push-endpoint=https://your-marketplace-handler.run.app/dcr
+  --push-endpoint=https://your-marketplace-handler.run.app/pubsub
 ```
 
 ### 3. Configure Service Control

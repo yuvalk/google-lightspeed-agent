@@ -86,11 +86,6 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
         "/marketplace/pubsub",  # Pub/Sub uses Google-signed tokens
     }
 
-    # Path prefixes that are public
-    PUBLIC_PREFIXES = (
-        "/marketplace/",
-    )
-
     def __init__(self, app: Any):
         super().__init__(app)
         self._settings = get_settings()
@@ -176,10 +171,6 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
         """Check if path/method combination is public."""
         # Explicit public paths
         if path in self.PUBLIC_PATHS:
-            return True
-
-        # Public prefixes
-        if path.startswith(self.PUBLIC_PREFIXES):
             return True
 
         # GET requests to root are public (for compatibility)

@@ -97,7 +97,7 @@ The deployment consists of **two separate Cloud Run services** plus **Cloud Memo
 | Service | Port | Purpose | Scaling |
 |---------|------|---------|---------|
 | **Marketplace Handler** | 8001 | Pub/Sub events, DCR | Always on (minScale=1) |
-| **Lightspeed Agent** | 8000 | A2A queries, user interactions | Scale to zero |
+| **Lightspeed Agent** | 8000 | A2A queries, user interactions | Always on (minScale=1) |
 
 ### Deployment Order
 
@@ -711,12 +711,18 @@ The MCP server configuration is hardcoded in `deploy/cloudrun/service.yaml` beca
 ```yaml
 args:
   - "--readonly"      # Run in read-only mode
+  - "--toolset"       # Restrict to specific toolsets
+  - "advisor,inventory,vulnerability,planning,rhsm,content_sources,rbac"
   - "http"            # Use HTTP transport
   - "--port"
   - "8080"            # Listen on port 8080
   - "--host"
   - "0.0.0.0"         # Bind to all interfaces
 ```
+
+The `--toolset` flag controls which MCP tool categories the server loads. Only the listed toolsets are available to the agent. This is enforced at the MCP server level, independently of the agent-side `MCP_READ_ONLY` tool filtering.
+
+**Available toolsets:** `advisor`, `inventory`, `vulnerability`, `remediations`, `planning`, `image_builder`, `rhsm`, `content_sources`, `rbac`
 
 **To change MCP server settings:**
 
@@ -731,6 +737,7 @@ args:
    - **Change port**: Modify `"8080"` to your desired port (also update `MCP_SERVER_URL` in the agent container env)
    - **Enable write operations**: Remove `"--readonly"` flag (not recommended for production)
    - **Change transport**: Modify `"http"` to `"sse"` or `"stdio"` (requires corresponding agent changes)
+   - **Change available toolsets**: Modify the comma-separated list after `"--toolset"`
 
 3. Redeploy after making changes:
    ```bash
@@ -738,6 +745,34 @@ args:
    ```
 
 **Note**: If you change the MCP server port, you must also update the `MCP_SERVER_URL` environment variable in the agent container to match.
+
+### Staging Environment (MCP Sidecar)
+
+When deploying against the Red Hat **staging** environment, the MCP sidecar needs environment variable overrides so it connects to the stage Insights APIs and SSO instead of production.
+
+Uncomment the `env` block on the `insights-mcp` container in `service.yaml`:
+
+```yaml
+env:
+  - name: LIGHTSPEED_BASE_URL
+    value: "https://console.stage.redhat.com"
+  - name: LIGHTSPEED_SSO_BASE_URL
+    value: "https://sso.stage.redhat.com"
+```
+
+These overrides are already present in `service.yaml` as commented-out lines. To enable them:
+
+1. Edit `deploy/cloudrun/service.yaml` and uncomment the `env` section under the `insights-mcp` container.
+2. Update the **agent container** SSO issuer to match the staging environment:
+   ```yaml
+   - name: RED_HAT_SSO_ISSUER
+     value: "https://sso.stage.redhat.com/auth/realms/redhat-external"
+   ```
+3. If using DCR, also update the marketplace handler for staging — see [GMA SSO API Configuration (Staging vs Production)](#gma-sso-api-configuration-staging-vs-production).
+4. Redeploy:
+   ```bash
+   ./deploy/cloudrun/deploy.sh --service agent
+   ```
 
 ### Alternative: Use Docker Hub
 
@@ -780,7 +815,7 @@ docker push docker.io/YOUR_USERNAME/red-hat-lightspeed-mcp:latest
 
 | Setting | Value | Description |
 |---------|-------|-------------|
-| Min Instances | 0 | Scale to zero when idle |
+| Min Instances | 1 | Always keep at least one instance running |
 | Max Instances | 10 | Maximum concurrent instances |
 | Concurrency | 80 | Requests per instance |
 | Timeout | 300s | Request timeout |
@@ -902,7 +937,8 @@ After deployment, the following endpoints are available:
 |----------|-------------|
 | `GET /health` | Health check |
 | `GET /ready` | Readiness check |
-| `POST /dcr` | Hybrid endpoint (Pub/Sub events + DCR requests) |
+| `POST /dcr` | DCR requests (OAuth client registration) |
+| `POST /pubsub` | Pub/Sub events (Google OIDC authenticated) |
 
 ### Lightspeed Agent Service
 
@@ -1985,8 +2021,9 @@ HANDLER_URL=$(gcloud run services describe ${HANDLER_SERVICE_NAME:-marketplace-h
 
 gcloud pubsub subscriptions create "$PUBSUB_SUBSCRIPTION" \
   --topic="$PUBSUB_TOPIC" \
-  --push-endpoint="${HANDLER_URL}/dcr" \
+  --push-endpoint="${HANDLER_URL}/pubsub" \
   --push-auth-service-account="$PUBSUB_INVOKER_SA" \
+  --push-auth-token-audience="${HANDLER_URL}/pubsub" \
   --ack-deadline=60 \
   --project=$GOOGLE_CLOUD_PROJECT \
   --impersonate-service-account="$PUBSUB_INVOKER_SA"

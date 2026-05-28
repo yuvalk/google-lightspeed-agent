@@ -143,7 +143,13 @@ The Lightspeed Agent requires the Red Hat Lightspeed MCP server to be running to
    redis-server
    ```
 
-3. **Run the agent** using one of these methods:
+3. **Set environment variables** to connect to the MCP server started in step 1:
+   ```bash
+   export MCP_TRANSPORT_MODE=http
+   export MCP_SERVER_URL=http://localhost:8080
+   ```
+
+4. **Run the agent** using one of these methods:
 
    **Development UI (ADK Web):**
    ```bash

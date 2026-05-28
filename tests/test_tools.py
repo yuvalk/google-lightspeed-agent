@@ -57,7 +57,7 @@ class TestMCPServerConfig:
         assert "run" in args
         assert "--interactive" in args
         assert "--rm" in args
-        assert "--read-only" in args
+        assert "--readonly" in args
         assert config.container_image in args
 
     def test_stdio_args_no_readonly(self):
@@ -69,7 +69,7 @@ class TestMCPServerConfig:
 
         args = config.get_stdio_args()
 
-        assert "--read-only" not in args
+        assert "--readonly" not in args
 
     def test_http_url(self):
         """Test HTTP URL generation."""

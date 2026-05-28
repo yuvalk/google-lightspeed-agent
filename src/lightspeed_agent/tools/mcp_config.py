@@ -38,7 +38,7 @@ class MCPServerConfig:
             self.container_image,
         ]
         if self.read_only:
-            args.append("--read-only")
+            args.append("--readonly")
         return args
 
     def get_http_url(self) -> str:

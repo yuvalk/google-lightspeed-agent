@@ -24,13 +24,12 @@ metadata:
     run.googleapis.com/description: "Red Hat Lightspeed Agent for Google Cloud - A2A-ready agent using Google ADK"
     run.googleapis.com/ingress: all
     run.googleapis.com/launch-stage: GA
+    run.googleapis.com/minScale: "1"
+    run.googleapis.com/maxScale: "10"
 spec:
   template:
     metadata:
       annotations:
-        # Scaling configuration
-        autoscaling.knative.dev/minScale: "0"
-        autoscaling.knative.dev/maxScale: "2"
         # CPU allocation
         run.googleapis.com/cpu-throttling: "false"
         # Startup probe
@@ -209,11 +208,19 @@ spec:
           image: ${MCP_IMAGE}
           args:
             - "--readonly"
+            - "--toolset"
+            - "advisor,inventory,vulnerability,planning,rhsm,content_sources,rbac"
             - "http"
             - "--port"
             - "8080"
             - "--host"
             - "0.0.0.0"
+          # Staging: uncomment env to override base URLs for the stage environment.
+          # env:
+          #   - name: LIGHTSPEED_BASE_URL
+          #     value: "https://console.stage.redhat.com"
+          #   - name: LIGHTSPEED_SSO_BASE_URL
+          #     value: "https://sso.stage.redhat.com"
           resources:
             limits:
               cpu: "1"

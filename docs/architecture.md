@@ -28,9 +28,8 @@ The system consists of **two separate services**:
 │  ┌───────────────────────────────────────────────────────────────────────────┐  │
 │  │                           FastAPI Application                             │  │
 │  │  ┌──────────────────────────────────────────────────────────────────────┐ │  │
-│  │  │                    Hybrid /dcr Endpoint                              │ │  │
-│  │  │  - Pub/Sub Events → Approve accounts and entitlements                 │ │  │
-│  │  │  - DCR Requests → Create OAuth clients via GMA SSO API               │ │  │
+│  │  │  POST /dcr → Create OAuth clients via GMA SSO API                    │ │  │
+│  │  │  POST /pubsub → Pub/Sub Events (Google OIDC verified)                │ │  │
 │  │  └──────────────────────────────────────────────────────────────────────┘ │  │
 │  └───────────────────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────────┘
@@ -111,9 +110,8 @@ The system is split into two services for important operational reasons:
 
 A separate FastAPI application for provisioning, providing:
 
-- **Hybrid /dcr Endpoint**: Single endpoint handling both:
-  - Pub/Sub events (account and entitlement approvals, filtered by product)
-  - DCR requests (OAuth client creation)
+- **POST /dcr**: DCR requests (OAuth client creation)
+- **POST /pubsub**: Pub/Sub events (account and entitlement approvals, Google OIDC verified)
 - **Health Endpoints**: Kubernetes-compatible health checks on separate probe port (8003, configurable via `HANDLER_PROBE_PORT`)
 - **Database Access**: PostgreSQL for persistent storage
 
@@ -158,7 +156,7 @@ This flow happens when a customer purchases from Google Cloud Marketplace:
 ```
 1. Customer purchases from Google Cloud Marketplace
 2. Marketplace sends Pub/Sub event to Marketplace Handler
-3. Handler receives POST /dcr with Pub/Sub message wrapper
+3. Handler receives POST /pubsub with Google OIDC token
 4. Handler filters by product (SERVICE_CONTROL_SERVICE_NAME) — account events pass through
 5. Handler extracts event type (ACCOUNT_CREATION_REQUESTED, ENTITLEMENT_CREATION_REQUESTED, etc.)
 6. Handler calls Google Procurement API to approve account, then entitlement
@@ -169,7 +167,7 @@ This flow happens when a customer purchases from Google Cloud Marketplace:
 ```
 ┌─────────────┐      ┌───────────────┐      ┌────────────────┐      ┌────────────┐
 │  Customer   │────▶│   Marketplace │────▶│    Pub/Sub     │────▶│  Handler   │
-│  Purchases  │      │   (Purchase)  │      │  (Event Push)  │      │  /dcr      │
+│  Purchases  │      │   (Purchase)  │      │  (Event Push)  │      │  /pubsub   │
 └─────────────┘      └───────────────┘      └────────────────┘      └─────┬──────┘
                                                                           │
                                          ┌─────────────────┐              │
@@ -269,7 +267,7 @@ src/lightspeed_agent/
 │   └── service.py             # DCR business logic
 ├── marketplace/                # Marketplace Handler service
 │   ├── app.py                 # Handler FastAPI app factory (port 8001)
-│   ├── router.py              # Hybrid /dcr endpoint (Pub/Sub + DCR)
+│   ├── router.py              # Separate /dcr and /pubsub endpoints
 │   ├── models.py              # Marketplace Pydantic models
 │   ├── repository.py          # PostgreSQL repositories
 │   ├── service.py             # Procurement API integration
@@ -345,7 +343,8 @@ Certain endpoints must be publicly accessible per A2A protocol:
 | Service | Endpoint | Port | Reason |
 |---------|----------|------|--------|
 | Agent | `/.well-known/agent.json` | 8000 | A2A discovery (no auth per spec) |
-| Handler | `/dcr` | 8001 | Pub/Sub push and DCR requests |
+| Handler | `/dcr` | 8001 | DCR requests (OAuth client registration) |
+| Handler | `/pubsub` | 8001 | Pub/Sub events (Google OIDC verified) |
 | Agent | `/health`, `/ready` | 8002 | Health probes (separate server, no auth) |
 | Handler | `/health`, `/ready` | 8003 | Health probes (separate server, no auth) |
 
@@ -374,7 +373,7 @@ Authentication is enforced at the **application layer** via OAuth middleware.
 - Request body size limits enforced via ASGI middleware (10 MB agent, 1 MB marketplace handler) to mitigate CWE-400 uncontrolled resource consumption
 - Security headers on all responses (HSTS, X-Content-Type-Options, X-Frame-Options)
 - AgentCard responses cached at the application level to reduce CPU cost under load
-- Pub/Sub verification via message signature
+- Pub/Sub verification via Google OIDC token
 
 ## Database Schema
 
