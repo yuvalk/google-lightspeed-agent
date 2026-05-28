@@ -407,6 +407,29 @@ class TestMCPHeaderAuditLogging:
         assert headers == {}
         assert "No MCP credentials available" in caplog.text
 
+    @pytest.mark.parametrize(
+        "mcp_url,should_warn",
+        [
+            ("http://localhost:8080", False),
+            ("http://127.0.0.1:8080", False),
+            ("http://[::1]:8080", False),
+            ("http://mcp.example.com:8080", True),
+            ("https://remote-mcp:443", True),
+        ],
+    )
+    def test_header_provider_warns_on_non_localhost_mcp(self, caplog, mcp_url, should_warn):
+        """Warning is emitted once at creation time for non-localhost MCP URLs."""
+        with patch("lightspeed_agent.tools.mcp_headers.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(mcp_server_url=mcp_url)
+            from lightspeed_agent.tools.mcp_headers import create_mcp_header_provider
+
+            with caplog.at_level(logging.WARNING):
+                create_mcp_header_provider()
+            if should_warn:
+                assert "Forwarding full-scope JWT to non-localhost" in caplog.text
+            else:
+                assert "Forwarding full-scope JWT to non-localhost" not in caplog.text
+
 
 # ===========================================================================
 # All callbacks return None tests (unchanged behavior)
