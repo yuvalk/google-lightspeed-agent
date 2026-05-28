@@ -392,25 +392,6 @@ class Settings(BaseSettings):
             )
         return self
 
-    @model_validator(mode="after")
-    def _warn_mcp_insecure_url(self) -> "Settings":
-        """Warn when MCP server URL uses HTTP for non-localhost targets."""
-        url = self.mcp_server_url
-        if url and not url.startswith("https://"):
-            from urllib.parse import urlparse
-
-            host = urlparse(url).hostname or ""
-            if host not in ("localhost", "127.0.0.1", "::1"):
-                import logging
-
-                logging.getLogger(__name__).warning(
-                    "MCP_SERVER_URL uses unencrypted HTTP for non-localhost host '%s'. "
-                    "Bearer tokens will be transmitted in cleartext. "
-                    "Use 'https://' for production deployments.",
-                    host,
-                )
-        return self
-
     # OpenTelemetry Configuration
     otel_enabled: bool = Field(
         default=False,
