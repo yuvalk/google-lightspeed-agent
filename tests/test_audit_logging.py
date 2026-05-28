@@ -123,6 +123,29 @@ class TestAuditContextFilter:
         assert record.order_id == ""  # type: ignore[attr-defined]
         assert record.request_id == ""  # type: ignore[attr-defined]
 
+    def test_filter_clears_fields_when_audit_disabled(self):
+        """Audit fields are empty strings when audit logging is disabled."""
+        _set_audit_context(
+            user_id="user-42",
+            org_id="org-7",
+            order_id="order-99",
+            request_id="req-abc",
+        )
+
+        with patch("lightspeed_agent.config.get_settings") as mock_gs:
+            settings = MagicMock()
+            settings.audit_logging_enabled = False
+            mock_gs.return_value = settings
+            f = AuditContextFilter()
+            record = self._make_record()
+            result = f.filter(record)
+
+        assert result is True
+        assert record.user_id == ""  # type: ignore[attr-defined]
+        assert record.org_id == ""  # type: ignore[attr-defined]
+        assert record.order_id == ""  # type: ignore[attr-defined]
+        assert record.request_id == ""  # type: ignore[attr-defined]
+
 
 # ===========================================================================
 # ContextVar getter tests
@@ -303,6 +326,22 @@ class TestAgentLoggingPluginAuditEvents:
         assert "MCP server unreachable" in caplog.text
         assert "user_id=test-user" in caplog.text
 
+    @pytest.mark.asyncio
+    async def test_audit_fields_empty_when_audit_disabled(self, caplog):
+        """Audit fields string is empty when audit logging is disabled."""
+        with patch(
+            "lightspeed_agent.api.a2a.logging_plugin.get_settings"
+        ) as mock_gs:
+            settings = MagicMock()
+            settings.audit_logging_enabled = False
+            settings.agent_logging_detail = "basic"
+            mock_gs.return_value = settings
+            plugin = AgentLoggingPlugin()
+            result = plugin._audit_fields()
+
+        assert "user_id=test-user" not in result
+        assert "org_id=test-org" not in result
+
 
 class TestAgentLoggingPluginDetailedAudit:
     """Tests for detailed mode with audit context."""
@@ -429,6 +468,27 @@ class TestMCPHeaderAuditLogging:
                 assert "Forwarding full-scope JWT to non-localhost" in caplog.text
             else:
                 assert "Forwarding full-scope JWT to non-localhost" not in caplog.text
+
+    def test_header_provider_omits_pii_when_audit_disabled(self, caplog):
+        """PII is omitted from logs when audit logging is disabled."""
+        _set_audit_context(user_id="user-1", org_id="org-1", request_id="req-1")
+        token_exp = datetime.now(UTC) + timedelta(hours=1)
+        _request_access_token.set(("test-token", token_exp))
+
+        from lightspeed_agent.tools.mcp_headers import create_mcp_header_provider
+
+        with patch("lightspeed_agent.tools.mcp_headers.get_settings") as mock_gs:
+            settings = MagicMock()
+            settings.audit_logging_enabled = False
+            mock_gs.return_value = settings
+            provider = create_mcp_header_provider()
+            with caplog.at_level(logging.INFO):
+                headers = provider(MagicMock())
+
+        assert headers == {"Authorization": "Bearer test-token"}
+        assert "event_type=mcp_jwt_forwarded" in caplog.text
+        assert "user_id=user-1" not in caplog.text
+        assert "org_id=org-1" not in caplog.text
 
 
 # ===========================================================================

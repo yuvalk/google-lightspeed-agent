@@ -54,6 +54,8 @@ class AgentLoggingPlugin(BasePlugin):
     @staticmethod
     def _audit_fields() -> str:
         """Build audit context string for log messages."""
+        if not get_settings().audit_logging_enabled:
+            return ""
         return (
             f"user_id={get_request_user_id()}, "
             f"org_id={get_request_org_id()}, "
