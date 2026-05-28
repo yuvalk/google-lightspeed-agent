@@ -348,6 +348,40 @@ class TestDCRRouter:
         data = response.json()
         assert data["error"] == "invalid_software_statement"
 
+    @pytest.mark.asyncio
+    async def test_dcr_endpoint_error_has_cache_headers(self, client):
+        """Test /dcr error response includes no-store cache headers."""
+        response = client.post(
+            "/dcr",
+            json={"software_statement": "invalid-jwt-token"},
+        )
+
+        assert response.status_code == 400
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["pragma"] == "no-cache"
+        assert response.headers["expires"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_dcr_endpoint_success_has_cache_headers(self, client):
+        """Test successful DCR response includes no-store cache headers."""
+        mock_response = DCRResponse(
+            client_id="test-client",
+            client_secret="test-secret",
+            client_secret_expires_at=0,
+        )
+        mock_service = AsyncMock()
+        mock_service.register_client = AsyncMock(return_value=mock_response)
+        with patch(
+            "lightspeed_agent.marketplace.router.get_dcr_service",
+            return_value=mock_service,
+        ):
+            response = client.post("/dcr", json={"software_statement": "valid-jwt"})
+
+        assert response.status_code == 201
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["pragma"] == "no-cache"
+        assert response.headers["expires"] == "0"
+
 
 class TestPubSubHandler:
     """Tests for Pub/Sub event handling via the /dcr endpoint."""

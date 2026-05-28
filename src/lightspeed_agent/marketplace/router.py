@@ -93,19 +93,19 @@ async def _handle_dcr_request(body: dict[str, Any]) -> JSONResponse:
                 "error": result.error.value,
                 "error_description": result.error_description,
             },
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache", "Expires": "0"},
         )
 
     logger.info("DCR successful: client_id=%s", result.client_id)
-    response = JSONResponse(
+    return JSONResponse(
         status_code=201,
         content={
             "client_id": result.client_id,
             "client_secret": result.client_secret,
             "client_secret_expires_at": result.client_secret_expires_at,
         },
-        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache", "Expires": "0"},
     )
-    return response
 
 
 async def _handle_pubsub_event(body: dict[str, Any]) -> JSONResponse:

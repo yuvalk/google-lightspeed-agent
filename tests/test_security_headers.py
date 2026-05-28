@@ -10,6 +10,7 @@ from lightspeed_agent.security.middleware import SecurityHeadersMiddleware
 EXPECTED_HSTS = "max-age=31536000; includeSubDomains"
 EXPECTED_XCTO = "nosniff"
 EXPECTED_XFO = "DENY"
+EXPECTED_CACHE_CONTROL = "no-store"
 
 
 @pytest.fixture
@@ -42,6 +43,7 @@ def _assert_security_headers(response):
     assert response.headers["strict-transport-security"] == EXPECTED_HSTS
     assert response.headers["x-content-type-options"] == EXPECTED_XCTO
     assert response.headers["x-frame-options"] == EXPECTED_XFO
+    assert response.headers["cache-control"] == EXPECTED_CACHE_CONTROL
 
 
 class TestSecurityHeadersMiddleware:
