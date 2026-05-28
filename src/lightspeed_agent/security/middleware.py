@@ -14,6 +14,10 @@ _SECURITY_HEADERS: dict[str, str] = {
     "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "default-src 'none'",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "geolocation=(), camera=(), microphone=()",
+    "Cache-Control": "no-store",
 }
 
 

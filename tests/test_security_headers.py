@@ -10,6 +10,10 @@ from lightspeed_agent.security.middleware import SecurityHeadersMiddleware
 EXPECTED_HSTS = "max-age=31536000; includeSubDomains"
 EXPECTED_XCTO = "nosniff"
 EXPECTED_XFO = "DENY"
+EXPECTED_CSP = "default-src 'none'"
+EXPECTED_REFERRER = "strict-origin-when-cross-origin"
+EXPECTED_PERMISSIONS = "geolocation=(), camera=(), microphone=()"
+EXPECTED_CACHE = "no-store"
 
 
 @pytest.fixture
@@ -38,10 +42,14 @@ def app_with_security_headers():
 
 
 def _assert_security_headers(response):
-    """Assert all three security headers are present with correct values."""
+    """Assert all security headers are present with correct values."""
     assert response.headers["strict-transport-security"] == EXPECTED_HSTS
     assert response.headers["x-content-type-options"] == EXPECTED_XCTO
     assert response.headers["x-frame-options"] == EXPECTED_XFO
+    assert response.headers["content-security-policy"] == EXPECTED_CSP
+    assert response.headers["referrer-policy"] == EXPECTED_REFERRER
+    assert response.headers["permissions-policy"] == EXPECTED_PERMISSIONS
+    assert response.headers["cache-control"] == EXPECTED_CACHE
 
 
 class TestSecurityHeadersMiddleware:
@@ -49,7 +57,7 @@ class TestSecurityHeadersMiddleware:
 
     @pytest.mark.asyncio
     async def test_security_headers_present_on_success(self, app_with_security_headers):
-        """All three security headers appear on a normal 200 response."""
+        """Security headers appear on a normal 200 response."""
         transport = ASGITransport(app=app_with_security_headers)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get("/ok")

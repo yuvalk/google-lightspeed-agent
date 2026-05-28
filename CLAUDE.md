@@ -114,7 +114,8 @@ The agent loads tools from a Red Hat Lightspeed MCP server running as a sidecar:
 ### Key Middleware Stack (request order, outermost first)
 1. CORS
 2. Request body size limit (`security/body_limit.py`) — 10 MB agent, 1 MB marketplace handler
-3. Security headers (`security/middleware.py`) — HSTS, X-Content-Type-Options, X-Frame-Options
+3. Security headers (`security/middleware.py`) — HSTS, CSP, X-Content-Type-Options,
+   X-Frame-Options, Referrer-Policy, Permissions-Policy, Cache-Control
 4. Redis rate limiting (`ratelimit/middleware.py`) — 60 req/min, 1000 req/hour
 5. JWT authentication (`auth/middleware.py`)
 
