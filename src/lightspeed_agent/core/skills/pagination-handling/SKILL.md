@@ -29,7 +29,7 @@ then let the user decide whether they need more.
 **When to skip the offer** (user already specified scope):
 - "Show me the top 3 CVEs on host X" → use limit=3, no follow-up needed
 - "Get the first page of vulnerabilities" → use limit=100 offset=0, no follow-up needed
-- "How many critical CVEs affect host X?" → fetch all pages silently to count
+- "How many critical CVEs affect host X?" → use the `efficient-counting` skill
 
 **Exception — remediatable CVE queries**: When the user asks for remediatable CVEs on a
 specific system, fetch all pages automatically. Remediatable CVEs can appear on any page,
@@ -75,3 +75,22 @@ report that fewer pages were available (avoids empty-page / out-of-range errors)
 parameter names or response shapes. After each response, advance `offset`/`page`
 using `meta`/`links.next` or `total`/`per_page` as appropriate for that API.
 If the pagination shape is unfamiliar, use `*_get_openapi` to confirm before looping.
+
+## Never Refuse to Paginate [STRICT]
+
+Do NOT tell the user that paginating or filtering results is "beyond your operational
+capacity" or would "exceed resource limits." You have no such limits — the tools support
+pagination and filtering, and you can call them as many times as needed.
+
+When the result set is large:
+1. **Apply filters first** — use `severity`, `remediation`, `status`, `known_exploit`,
+   or other parameters documented in the `multi-step-workflows` skill to narrow results
+   before paginating.
+2. **Paginate when needed** — if the user needs actual data (not just a count), paginate
+   through all pages using the stop conditions above.
+3. **For counting queries** — see the `efficient-counting` skill; a "how many" question
+   never requires fetching every page.
+
+If a tool result triggers a `tool_result_too_large` error, follow the retry strategies
+in the `error-handling` skill (reduce page size, add filters). Never treat a large
+result set as a reason to give up.

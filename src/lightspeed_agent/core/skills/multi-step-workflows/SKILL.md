@@ -25,15 +25,23 @@ then query its CVEs with the appropriate filter parameters (Vulnerability).
 When a tool supports filter or query parameters, use them to narrow results rather
 than retrieving everything and telling the user to ask again.
 
-### Common filter parameters
+### Common filter parameters [STRICT]
+
+These parameters are confirmed available — use them directly without a schema lookup.
+Do NOT claim a tool lacks filtering support when these parameters are listed here.
 
 **vulnerability__get_cves**: `limit`, `offset`, `sort` (e.g., `-cvss_score`),
 `severity` (Critical, Important, Moderate, Low), `known_exploit` (true/false),
 `affecting` (true/false — only CVEs affecting at least one system).
 
-**vulnerability__get_system_cves**: `limit`, `offset`, `sort`, `severity`,
-`status` (Applicable, Not applicable), `known_exploit`, `remediation`
+**vulnerability__get_system_cves**: `limit`, `offset`, `sort`,
+`severity` (Critical, Important, Moderate, Low), `known_exploit` (true/false),
+`status` (Applicable, Not applicable), `remediation`
 (Applicable — has a remediation available).
+
+**vulnerability__get_systems**: `limit`, `offset`, `sort`, `filter`.
+Note: this tool returns only systems tracked for CVE analysis — see
+**Tool disambiguation** below for when to use it vs. `inventory__list_hosts`.
 
 **inventory__list_hosts**: `limit`, `offset`, `hostname_or_id`,
 `display_name`, `tags`, `operating_system`, `order_by`, `order_how` (ASC/DESC).
@@ -41,6 +49,23 @@ than retrieving everything and telling the user to ask again.
 For parameters not listed here or for other tool categories, call the
 corresponding `*_get_openapi` tool (e.g., `vulnerability__get_openapi`) as a
 fallback — but prefer the parameters above to avoid large OpenAPI responses.
+
+### Tool disambiguation: system/host listing [STRICT]
+
+Two tools can list systems — they query **different services** and return **different
+counts**:
+
+| Tool | Service | Scope |
+|------|---------|-------|
+| `inventory__list_hosts` | Inventory | **All** registered systems (including immutable/edge) |
+| `vulnerability__get_systems` | Vulnerability | Only systems tracked for CVE analysis (excludes immutable) |
+
+**Selection rule:**
+- General "how many systems/hosts do I have?" or "list my systems" ->
+  **`inventory__list_hosts`** (source of truth for the full fleet).
+- "Which systems are affected by CVE-X?" or vulnerability-scoped queries ->
+  `vulnerability__get_systems` or `vulnerability__get_cve_systems`.
+- When the user says **"inventory"**, always use **`inventory__list_hosts`**.
 
 Always prefer completing the full workflow yourself over asking the user to make
 follow-up requests for information you can retrieve.

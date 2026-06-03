@@ -180,11 +180,12 @@ class TestSkillLoading:
             / "skills"
         )
         skills = _load_skills_from_dir(bundled_dir)
-        assert len(skills) == 6
+        assert len(skills) == 7
         expected_names = {
             "tool-invocation-rules",
             "multi-step-workflows",
             "pagination-handling",
+            "efficient-counting",
             "error-handling",
             "guardrails-safety",
             "response-formatting",

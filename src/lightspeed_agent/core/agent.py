@@ -69,9 +69,9 @@ Load and apply skills according to their priority level:
 - **[STRICT] skills** (`guardrails-safety`, `tool-invocation-rules`): You MUST load \
 these skills on EVERY request before responding. They contain detailed rules that \
 complement the summary above and must always be enforced.
-- **[PREFERRED] skills** (`error-handling`, `multi-step-workflows`, \
-`pagination-handling`): Load and consult these when the request involves tool calls, \
-multi-step operations, or paginated results.
+- **[PREFERRED] skills** (`efficient-counting`, `error-handling`, \
+`multi-step-workflows`, `pagination-handling`): Load and consult these when the \
+request involves tool calls, multi-step operations, counting, or paginated results.
 - **[GUIDANCE] skills** (`response-formatting`): Follow for style and formatting \
 preferences.
 """
