@@ -47,14 +47,14 @@ class AgentLoggingPlugin(BasePlugin):
 
     def __init__(self) -> None:
         super().__init__(name="agent_logging")
+        self._audit_enabled = get_settings().audit_logging_enabled
 
     def _is_detailed(self) -> bool:
         return get_settings().agent_logging_detail == "detailed"
 
-    @staticmethod
-    def _audit_fields() -> str:
+    def _audit_fields(self) -> str:
         """Build audit context string for log messages."""
-        if not get_settings().audit_logging_enabled:
+        if not self._audit_enabled:
             return ""
         return (
             f"user_id={get_request_user_id()}, "

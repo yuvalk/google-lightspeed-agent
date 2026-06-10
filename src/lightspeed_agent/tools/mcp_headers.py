@@ -31,6 +31,7 @@ def create_mcp_header_provider() -> Callable[["ReadonlyContext"], dict[str, str]
         A callable that takes ReadonlyContext and returns headers dict.
     """
 
+    audit_enabled = get_settings().audit_logging_enabled
     # TODO: Implement RFC 8693 token exchange for production deployments
     # to obtain a scoped token instead of forwarding the full-scope JWT.
     mcp_url = get_settings().mcp_server_url
@@ -57,7 +58,7 @@ def create_mcp_header_provider() -> Callable[["ReadonlyContext"], dict[str, str]
             token, token_exp = token_info
             now = datetime.now(UTC)
 
-            if get_settings().audit_logging_enabled:
+            if audit_enabled:
                 logger.info(
                     "Forwarding JWT to MCP server "
                     "(event_type=mcp_jwt_forwarded, user_id=%s, org_id=%s, "

@@ -457,6 +457,7 @@ class TestMCPHeaderAuditLogging:
         with patch("lightspeed_agent.tools.mcp_headers.get_settings") as mock_gs:
             settings = MagicMock()
             settings.audit_logging_enabled = False
+            settings.mcp_server_url = "http://localhost:8080"
             mock_gs.return_value = settings
             provider = create_mcp_header_provider()
             with caplog.at_level(logging.INFO):
