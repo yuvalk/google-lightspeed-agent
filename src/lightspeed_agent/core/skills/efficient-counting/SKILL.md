@@ -37,11 +37,10 @@ would "exceed resource limits." You have no such limits — the tools support co
 via response metadata, and you never need to fetch every page to answer "how many."
 
 When the user asks a "how many" question:
-1. **Apply filters first** — use `severity`, `remediation`, `status`, `known_exploit`,
-   or other parameters documented in the `multi-step-workflows` skill to narrow results.
+1. **Apply filters first** — use the filter parameters documented in the
+   `multi-step-workflows` skill to narrow results.
 2. **Use response metadata** — make one filtered call with `limit=1` and read the total
-   from the response metadata: `meta.total_items` for Vulnerability tools, `total` for
-   Inventory tools, `meta.count` for Advisor/Content Sources/Image Builder/RHSM tools.
+   from the metadata field paths described above.
 
 A "how many" question never requires fetching every page. For queries where the
 user needs actual data (not just a count), see the `pagination-handling` skill.

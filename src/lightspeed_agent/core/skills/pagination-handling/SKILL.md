@@ -85,9 +85,8 @@ capacity" or would "exceed resource limits." You have no such limits — the too
 pagination and filtering, and you can call them as many times as needed.
 
 When the result set is large:
-1. **Apply filters first** — use `severity`, `remediation`, `status`, `known_exploit`,
-   or other parameters documented in the `multi-step-workflows` skill to narrow results
-   before paginating.
+1. **Apply filters first** — use the filter parameters documented in the
+   `multi-step-workflows` skill to narrow results before paginating.
 2. **Paginate when needed** — if the user needs actual data (not just a count), paginate
    through all pages using the stop conditions above.
 3. **For counting queries** — see the `efficient-counting` skill; a "how many" question
