@@ -154,7 +154,7 @@ The agent loads tools from a Red Hat Lightspeed MCP server running as a sidecar:
 
 Agent behavioral instructions use ADK's progressive-disclosure Skills system instead of a monolithic system prompt. Each skill is a `SKILL.md` file with YAML frontmatter (L1: name + description loaded at startup) and a markdown body (L2: full instructions loaded on-demand by the LLM).
 
-- **Bundled skills** (`core/skills/`): tool-invocation-rules, multi-step-workflows, pagination-handling, error-handling, guardrails-safety, response-formatting — always loaded
+- **Bundled skills** (`core/skills/`): tool-invocation-rules, multi-step-workflows, pagination-handling, efficient-counting, error-handling, guardrails-safety, response-formatting — always loaded
 - **External skills** (`SKILLS_DIR` env var): deployment-specific skills loaded alongside bundled ones; same-name skills override bundled defaults
 - A2A AgentCard skills (`tools/a2a_skills.py`) are a separate concept — they describe agent capabilities for the A2A protocol, not LLM behavioral instructions
 
