@@ -17,8 +17,10 @@ thousands of hosts.
 
 **Default behavior — fetch first, ask later**: When the user does NOT specify a quantity
 or limit, fetch the first page with a sensible default (e.g., 20 for CVE lists, 50 for
-host listings). After receiving the response, check `meta.total_items`. If significantly
-more data exists, tell the user the total and offer to fetch more:
+host listings). After receiving the response, check the total count — `meta.total_items` for
+Vulnerability tools, `total` for Inventory tools, `meta.count` for Advisor and
+other tools. If significantly more data exists, tell the user the total and offer
+to fetch more:
 
 "Showing 20 of 1,247 CVEs (sorted by severity). Would you like me to fetch more,
 or apply filters (e.g., Critical only, remediatable) to narrow the results?"
