@@ -55,6 +55,6 @@ You do NOT need to fetch every page to answer "how many" — the response metada
 the total matching the filters in a single call.
 
 **"How many systems are in my inventory?"** (system counting query)
--> inventory__list_hosts (limit=1) -> read the total from the response metadata ->
+-> inventory__list_hosts (limit=1) -> read **`total`** from the response ->
 report the count. Do NOT use `vulnerability__get_systems` for general system counts —
 it returns a smaller subset that excludes immutable systems.
