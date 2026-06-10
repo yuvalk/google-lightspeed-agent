@@ -242,5 +242,5 @@ class TestSkillLoading:
         from lightspeed_agent.core.agent import _load_skills
 
         result = _load_skills("/nonexistent/external/path")
-        # Bundled skills should still load (6 skills)
+        # Bundled skills should still load (7 skills)
         assert result is not None
