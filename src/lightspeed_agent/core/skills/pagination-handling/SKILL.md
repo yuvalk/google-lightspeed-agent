@@ -38,7 +38,7 @@ specific system, fetch all pages automatically. Remediatable CVEs can appear on 
 so the first page alone often returns zero matches.
 
 **Pagination execution**: For multi-page fetches, **call the same MCP tool repeatedly**
-with JSON arguments from the tool schema (see **Tool invocation format** above).
+with JSON arguments matching the tool schema (see the `tool-invocation-rules` skill).
 [Red Hat Lightspeed MCP](https://github.com/RedHatInsights/insights-mcp) returns Insights
 API JSON as-is; list responses are often JSON:API-style (`data`, `meta`, `links`) or
 `results` with `page`/`per_page`/`total` — read the fields present. If the pagination
