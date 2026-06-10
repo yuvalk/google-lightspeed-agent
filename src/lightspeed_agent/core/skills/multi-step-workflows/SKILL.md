@@ -39,7 +39,8 @@ Do NOT claim a tool lacks filtering support when these parameters are listed her
 `status` (Applicable, Not applicable), `remediation`
 (Applicable — has a remediation available).
 
-**vulnerability__get_systems**: `limit`, `offset`, `sort`, `filter`.
+**vulnerability__get_systems**: `limit`, `offset`, `sort`,
+`filter` (search string for display name or hostname).
 Note: this tool returns only systems tracked for CVE analysis — see
 **Tool disambiguation** below for when to use it vs. `inventory__list_hosts`.
 
