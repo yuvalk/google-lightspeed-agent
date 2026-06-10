@@ -4,7 +4,7 @@ description: |
   Use when the user asks for totals, counts, "number of", or "how many?"
   of any resource — CVEs, hosts, advisory rules, blueprints, subscriptions,
   or content sources. Answers count queries with a single API call
-  using limit=1 and response metadata instead of fetching all pages.
+  using limit=1 and response metadata instead of fetching all pages. [PREFERRED]
 metadata:
   author: red-hat
   version: "1.0"
