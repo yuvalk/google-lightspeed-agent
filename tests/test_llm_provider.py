@@ -20,6 +20,11 @@ def test_default_provider_is_gemini():
     assert s.llm_provider == "gemini"
 
 
+def test_default_gemini_model():
+    s = Settings(google_api_key="test-key")
+    assert s.gemini_model == "gemini-3.5-flash"
+
+
 def test_llm_model_defaults_to_none():
     s = Settings(google_api_key="test-key")
     assert s.llm_model is None
