@@ -1258,8 +1258,9 @@ gcloud run services update lightspeed-agent \
 
 **Tuning tips:**
 
-- **51,200 characters** (default, 50 KiB) is a conservative limit that keeps input tokens well within
-  Vertex AI TPM quotas for `gemini-3.5-flash`
+- **51,200 characters** (default, 50 KiB) is a conservative starting point meant to keep input
+  tokens well within your Vertex AI TPM quota — verify against the quota for whichever model
+  you configure via `GEMINI_MODEL`, since quotas and context windows vary by model
 - If you have higher TPM quotas, increase the limit to allow richer responses
 - The optimal limit depends on the model's context window and expected session length — longer
   multi-turn sessions accumulate more context, leaving less room for individual tool results.
