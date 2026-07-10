@@ -25,6 +25,10 @@ LLM_PROVIDER=gemini
 GEMINI_MODEL=gemini-3.5-flash
 ```
 
+> **Cost note:** `gemini-3.5-flash` is priced significantly higher per token than the
+> previous default, `gemini-2.5-flash`. Review current Vertex AI / AI Studio pricing
+> before relying on the default in high-volume or cost-sensitive deployments.
+
 **Different Gemini model:**
 
 ```bash
