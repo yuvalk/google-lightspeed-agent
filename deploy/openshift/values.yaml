@@ -97,7 +97,7 @@ google:
   # Set to true to use Vertex AI instead of Google AI Studio
   useVertexAI: false
   cloudLocation: global
-  geminiModel: gemini-2.5-flash
+  geminiModel: gemini-3.5-flash
   httpRetry:
     attempts: 5
     initialDelay: 1.0
@@ -113,7 +113,7 @@ llm:
   # "litellm" — use any provider supported by LiteLLM (OpenAI, Anthropic, etc.).
   provider: "gemini"
   # Model name (works with both providers). For litellm, use "provider/model"
-  # format (e.g., "vertex_ai/gemini-2.5-flash"). For gemini, any provider/
+  # format (e.g., "vertex_ai/gemini-3.5-flash"). For gemini, any provider/
   # prefix is stripped automatically. Falls back to google.geminiModel when empty.
   model: ""
   # Custom API endpoint URL (litellm only, for self-hosted models).

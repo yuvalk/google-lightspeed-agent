@@ -13,7 +13,7 @@ The agent supports multiple LLM backends via Google ADK. By default it uses Gemi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_PROVIDER` | `gemini` | LLM provider backend: `gemini` (Google AI Studio or Vertex AI) or `litellm` (100+ providers via LiteLLM) |
-| `LLM_MODEL` | - | Model name (works with both providers). For `litellm`: uses `provider/model` format (e.g., `openai/gpt-4o`, `vertex_ai/gemini-2.5-flash`). For `gemini`: any `provider/` prefix is stripped automatically. Falls back to `GEMINI_MODEL` when not set |
+| `LLM_MODEL` | - | Model name (works with both providers). For `litellm`: uses `provider/model` format (e.g., `openai/gpt-4o`, `vertex_ai/gemini-3.5-flash`). For `gemini`: any `provider/` prefix is stripped automatically. Falls back to `GEMINI_MODEL` when not set |
 | `LLM_API_KEY` | - | API key for non-Google LLM providers (`litellm` only). Some providers also accept their own env vars (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) |
 | `LLM_API_BASE` | - | Custom API endpoint URL (`litellm` only). For self-hosted models or proxy endpoints |
 
@@ -22,13 +22,13 @@ The agent supports multiple LLM backends via Google ADK. By default it uses Gemi
 ```bash
 # These are the defaults; no LLM_* variables required
 LLM_PROVIDER=gemini
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.5-flash
 ```
 
 **Different Gemini model:**
 
 ```bash
-LLM_MODEL=gemini-2.0-flash
+LLM_MODEL=gemini-2.5-flash
 ```
 
 **OpenAI:**
@@ -80,7 +80,7 @@ These settings apply when `LLM_PROVIDER=gemini` (the default).
 | `GOOGLE_API_KEY` | - | Google AI Studio API key (required if not using Vertex AI) |
 | `GOOGLE_CLOUD_PROJECT` | - | GCP project ID (required for Vertex AI) |
 | `GOOGLE_CLOUD_LOCATION` | `global` | Vertex AI model location (use `global` for pay-as-you-go) |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Default Gemini model (used when `LLM_MODEL` is not set) |
+| `GEMINI_MODEL` | `gemini-3.5-flash` | Default Gemini model (used when `LLM_MODEL` is not set) |
 | `GOOGLE_APPLICATION_CREDENTIALS` | - | Path to GCP service account key JSON file for Vertex AI authentication (ADC) |
 | `GEMINI_HTTP_RETRY_ATTEMPTS` | `5` | Max HTTP attempts per model call (including the first). Use `1` to disable SDK retries. Aligns with [google-genai defaults](https://cloud.google.com/vertex-ai/generative-ai/docs/retry-strategy). |
 | `GEMINI_HTTP_RETRY_INITIAL_DELAY` | `1.0` | Initial backoff delay in seconds (exponential backoff with jitter). |

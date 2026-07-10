@@ -180,7 +180,7 @@ curl -s -o /dev/null -w "%{http_code}" \
 
 ```bash
 # Test Gemini API directly
-curl -X POST "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=$GOOGLE_API_KEY" \
+curl -X POST "https://generativelanguage.googleapis.com/v1/models/gemini-3.5-flash:generateContent?key=$GOOGLE_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"contents":[{"parts":[{"text":"Hello"}]}]}'
 ```

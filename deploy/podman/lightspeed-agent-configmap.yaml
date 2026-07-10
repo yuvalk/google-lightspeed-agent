@@ -11,7 +11,7 @@ data:
   # Google AI Configuration
   GOOGLE_GENAI_USE_VERTEXAI: "FALSE"
   GOOGLE_CLOUD_LOCATION: "global"
-  GEMINI_MODEL: "gemini-2.5-flash"
+  GEMINI_MODEL: "gemini-3.5-flash"
 
   # Red Hat SSO Configuration
   RED_HAT_SSO_ISSUER: "https://sso.redhat.com/auth/realms/redhat-external"

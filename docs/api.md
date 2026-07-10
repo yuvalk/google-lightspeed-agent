@@ -241,7 +241,7 @@ with the [A2A protocol](https://google.github.io/A2A/) (Agent-to-Agent) for inte
 │  │                      (agents/llm_agent.py)                           │   │
 │  │                                                                      │   │
 │  │  + name: str                                                         │   │
-│  │  + model: str (e.g., "gemini-2.5-flash")                             │   │
+│  │  + model: str (e.g., "gemini-3.5-flash")                             │   │
 │  │  + instruction: str                                                  │   │
 │  │  + tools: list[BaseTool | McpToolset]                                │   │
 │  └───────────────────────────────────┬──────────────────────────────────┘   │

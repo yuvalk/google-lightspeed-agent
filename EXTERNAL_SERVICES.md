@@ -13,7 +13,7 @@ The agent uses Google Gemini models by default, but Vertex AI supports deploying
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Model used for agent responses |
+| `GEMINI_MODEL` | `gemini-3.5-flash` | Model used for agent responses |
 | `GOOGLE_GENAI_USE_VERTEXAI` | `false` | Switch between AI Studio and Vertex AI |
 | `GOOGLE_CLOUD_LOCATION` | `us-central1` | Region for Vertex AI |
 

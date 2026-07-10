@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Red Hat Lightspeed Agent for Google Cloud — an A2A-ready (Agent-to-Agent protocol) AI agent providing access to Red Hat Insights, built on Google Agent Development Kit (ADK), Gemini 2.5 Flash, and a Red Hat Lightspeed MCP server sidecar. Integrates with Google Cloud Marketplace for provisioning, billing, and metering.
+Red Hat Lightspeed Agent for Google Cloud — an A2A-ready (Agent-to-Agent protocol) AI agent providing access to Red Hat Insights, built on Google Agent Development Kit (ADK), Gemini 3.5 Flash, and a Red Hat Lightspeed MCP server sidecar. Integrates with Google Cloud Marketplace for provisioning, billing, and metering.
 
 ## Common Commands
 
@@ -140,5 +140,5 @@ CORS → body size limits → security headers → rate limiting (60 req/min, 10
 
 All configuration is via environment variables, managed through Pydantic settings in `config/settings.py`. See `.env.example` for the complete list (30+ vars) and `docs/configuration.md` for detailed documentation.
 
-Key variables: `GOOGLE_API_KEY` (or Vertex AI), `GEMINI_MODEL` (default: `gemini-2.5-flash`), `DATABASE_URL`, `SESSION_DATABASE_URL`, `MCP_TRANSPORT_MODE`, `MCP_SERVER_URL`, `RED_HAT_SSO_CLIENT_ID`/`SECRET`. Dev-only bypasses: `SKIP_JWT_VALIDATION`, `SKIP_DCR_JWT_VALIDATION`, `SKIP_ORDER_VALIDATION`.
+Key variables: `GOOGLE_API_KEY` (or Vertex AI), `GEMINI_MODEL` (default: `gemini-3.5-flash`), `DATABASE_URL`, `SESSION_DATABASE_URL`, `MCP_TRANSPORT_MODE`, `MCP_SERVER_URL`, `RED_HAT_SSO_CLIENT_ID`/`SECRET`. Dev-only bypasses: `SKIP_JWT_VALIDATION`, `SKIP_DCR_JWT_VALIDATION`, `SKIP_ORDER_VALIDATION`.
 

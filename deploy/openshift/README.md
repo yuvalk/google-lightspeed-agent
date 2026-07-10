@@ -587,7 +587,7 @@ The MCP server runs as a sidecar container in the agent pod.
 
 | Value | Description | Default |
 |---|---|---|
-| `google.geminiModel` | Default Gemini model (used when `llm.model` is not set) | `gemini-2.5-flash` |
+| `google.geminiModel` | Default Gemini model (used when `llm.model` is not set) | `gemini-3.5-flash` |
 | `google.useVertexAI` | Use Vertex AI instead of AI Studio | `false` |
 | `google.cloudLocation` | Vertex AI region (use `global` for pay-as-you-go) | `global` |
 | `secrets.gcpServiceAccountKey` | GCP service account key JSON for Vertex AI authentication via ADC (alternative to `secrets.googleApiKey`) | `""` |
@@ -624,7 +624,7 @@ To use Vertex AI with service account authentication, set in `my-values.yaml`:
 
 ```yaml
 llm:
-  model: "vertex_ai/gemini-2.5-flash"
+  model: "vertex_ai/gemini-3.5-flash"
 
 google:
   useVertexAI: true

@@ -72,7 +72,7 @@ class Settings(BaseSettings):
         description="Google Cloud location for Vertex AI (use 'global' for pay-as-you-go)",
     )
     gemini_model: str = Field(
-        default="gemini-2.5-flash",
+        default="gemini-3.5-flash",
         description="Gemini model to use",
     )
     google_application_credentials: str | None = Field(
